@@ -2,7 +2,6 @@
 
 import csv
 import shutil
-import warnings
 from pathlib import Path
 
 import typer
@@ -10,11 +9,6 @@ import typer
 from process_dcm import __version__
 from process_dcm.const import RESERVED_CSV
 from process_dcm.utils import delete_if_empty, process_and_save_csv, process_dcm
-
-# Filter the specific pydicom warning
-warnings.filterwarnings(
-    "ignore", message=r"The value length \(\d+\) exceeds the maximum length of \d+ allowed for VR CS\."
-)
 
 TOL = 2.0
 HELP = f"Process DICOM files in subfolders, extract images and metadata.\n\nVersion: {__version__}"

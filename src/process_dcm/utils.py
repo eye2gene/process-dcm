@@ -8,7 +8,6 @@ import json
 import os
 import shutil
 import tempfile
-import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -27,7 +26,12 @@ from rich.progress import track
 from process_dcm import __version__
 from process_dcm.const import RESERVED_CSV, ImageModality
 
-warnings.filterwarnings("ignore", category=UserWarning, message="A value of type *")
+# process-dcm keeps its own per-dataset state in plain snake_case attributes on the pydicom Dataset, which pydicom
+# stores without VR validation. Never use real DICOM elements (Modality, AccessionNumber, ReferencedFileID, ...)
+# for it: pydicom 3 warns on every non-conformant value and the file's own values would be clobbered.
+#   pdcm_modality: ImageModality resolved by update_modality()
+#   pdcm_group:    image group counter used in output file names and metadata "group" / "source_id"
+#   pdcm_source:   path of the source DICOM file, written to metadata "source_file"
 
 dict_eye = {"R": "OD", "L": "OS"}
 
@@ -88,20 +92,18 @@ def meta_images(dcm_obj: FileDataset) -> dict:
         dict: A dictionary containing the extracted metadata from the input DICOM file dataset.
     """
     meta: dict = defaultdict(dict)
-    mod = dcm_obj.get("Modality")
+    mod: ImageModality = dcm_obj.pdcm_modality  # set by update_modality()
+    group = getattr(dcm_obj, "pdcm_group", 0)
     meta["modality"] = mod.value
-    meta["group"] = dcm_obj.get("AccessionNumber", 0)
+    meta["group"] = group
     meta["size"]["width"] = dcm_obj.get("Columns", 0)
     meta["size"]["height"] = dcm_obj.get("Rows", 0)
     meta["field_of_view"] = dcm_obj.get("HorizontalFieldOfView")
-    meta["source_id"] = f"{dcm_obj.Modality.code}-{dcm_obj.AccessionNumber}"  # pyright: ignore[reportArgumentType]
+    meta["source_id"] = f"{mod.code}-{group}"
 
     # Add relative path to source DICOM file if available
-    if hasattr(dcm_obj, "ReferencedFileID"):
-        # Store as string, relative to the output directory (target_dir)
-        meta["source_file"] = os.path.relpath(str(dcm_obj.ReferencedFileID), os.getcwd())  # pyright: ignore[reportArgumentType]
-    else:
-        meta["source_file"] = None  # pyright: ignore[reportArgumentType]
+    source = getattr(dcm_obj, "pdcm_source", None)
+    meta["source_file"] = os.path.relpath(str(source), os.getcwd()) if source is not None else None
 
     if mod.is_2d_image:
         meta["dimensions_mm"]["width"] = dcm_obj.get("Columns", 0) * dcm_obj.get("PixelSpacing", [0, 0])[1]
@@ -241,56 +243,59 @@ process_dcm_meta.__doc__ = (
 
 
 def update_modality(dcm: FileDataset) -> bool:
-    """Updates the modality of the given DICOM object based on its Manufacturer and SeriesDescription attributes.
+    """Resolves the image modality of a DICOM object from its Modality, Manufacturer and SeriesDescription.
+
+    The result is stored in the plain attribute ``dcm.pdcm_modality`` (an :class:`ImageModality`); the DICOM
+    ``Modality`` element itself is left untouched.
 
     Args:
         dcm (pydicom.dataset.FileDataset): The DICOM object to update.
 
     Returns:
-        bool: True if modality is updated; False if the modality is unsupported.
+        bool: True if modality is resolved; False if the modality is unsupported.
     """
     if dcm.get("Modality") is None:
         return False  # No modality, continue # no cov
     elif dcm.Modality == "OPT":
-        dcm.Modality = ImageModality.OCT
+        dcm.pdcm_modality = ImageModality.OCT
     elif dcm.Modality == "OP":
         if dcm.Manufacturer.upper() == "TOPCON":
-            dcm.Modality = ImageModality.COLOUR_PHOTO
+            dcm.pdcm_modality = ImageModality.COLOUR_PHOTO
         elif dcm.Manufacturer.upper() == "OPTOS":
             if dcm.get("HorizontalFieldOfView", 0) == 200:
-                dcm.Modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD  # no cov AWSS
+                dcm.pdcm_modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD  # no cov AWSS
             elif "FA " in dcm.get("SeriesDescription", "") and any(
                 "Fluorescein" in str(item) for item in dcm.get("ContrastBolusAgentSequence", [])
             ):
-                dcm.Modality = ImageModality.OPTOS_FA
+                dcm.pdcm_modality = ImageModality.OPTOS_FA
             elif "RG OPTOMAP" in dcm.get("SeriesDescription", "").upper():
-                dcm.Modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD
+                dcm.pdcm_modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD
             elif "OPTOMAP" in dcm.get("SeriesDescription", "").upper():
-                dcm.Modality = ImageModality.UNKNOWN_ULTRAWIDEFIELD
+                dcm.pdcm_modality = ImageModality.UNKNOWN_ULTRAWIDEFIELD
             else:
-                dcm.Modality = ImageModality.UNKNOWN
+                dcm.pdcm_modality = ImageModality.UNKNOWN
         elif " IR" in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.SLO_INFRARED
+            dcm.pdcm_modality = ImageModality.SLO_INFRARED
         elif " BAF " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.AUTOFLUORESCENCE_BLUE
+            dcm.pdcm_modality = ImageModality.AUTOFLUORESCENCE_BLUE
         elif " ICGA " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.INDOCYANINE_GREEN_ANGIOGRAPHY
+            dcm.pdcm_modality = ImageModality.INDOCYANINE_GREEN_ANGIOGRAPHY
         elif " FA&ICGA " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.FA_ICGA
+            dcm.pdcm_modality = ImageModality.FA_ICGA
         elif " FA " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.FLUORESCEIN_ANGIOGRAPHY
+            dcm.pdcm_modality = ImageModality.FLUORESCEIN_ANGIOGRAPHY
         elif " RF " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.RED_FREE
+            dcm.pdcm_modality = ImageModality.RED_FREE
         elif " BR " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.REFLECTANCE_BLUE
+            dcm.pdcm_modality = ImageModality.REFLECTANCE_BLUE
         elif " MColor " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.REFLECTANCE_MCOLOR
+            dcm.pdcm_modality = ImageModality.REFLECTANCE_MCOLOR
         else:
-            dcm.Modality = ImageModality.UNKNOWN
+            dcm.pdcm_modality = ImageModality.UNKNOWN
     else:
         return False  # Unsupported modality, continue
 
-    return True  # Modality updated successfully
+    return True  # Modality resolved successfully
 
 
 def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> dict[str, list[FileDataset]]:
@@ -354,7 +359,7 @@ def process_dcm_images(
         ref = hex_hash(d0.get("FrameOfReferenceUID", "0"))
         date_tag = f"{do_date(d0.get('AcquisitionDateTime', '00000000'), '%Y%m%d%H%M%S.%f', '%Y%m%d_%H%M%S')}_{ref}"
     lat = dict_eye.get(d0.get("ImageLaterality", d0.get("Laterality")), "OU")
-    target_dir = output_dir / f"{d0.PatientID}_{date_tag}_{lat}_{d0.Modality.code}.DCM"
+    target_dir = output_dir / f"{d0.PatientID}_{date_tag}_{lat}_{d0.pdcm_modality.code}.DCM"
 
     if overwrite:
         shutil.rmtree(target_dir, ignore_errors=True)
@@ -381,10 +386,10 @@ def process_dcm_images(
             arr = np.expand_dims(arr, axis=0)
 
         for i in range(dcmO.NumberOfFrames):
-            out_img = os.path.join(target_dir, f"{dcmO.Modality.code}-{dcmO.AccessionNumber}_{i}.{image_format}")
+            out_img = os.path.join(target_dir, f"{dcmO.pdcm_modality.code}-{dcmO.pdcm_group}_{i}.{image_format}")
             while os.path.exists(out_img):
-                dcmO.AccessionNumber += 1  # increase group_id
-                out_img = os.path.join(target_dir, f"{dcmO.Modality.code}-{dcmO.AccessionNumber}_{i}.{image_format}")
+                dcmO.pdcm_group += 1  # increase group_id
+                out_img = os.path.join(target_dir, f"{dcmO.pdcm_modality.code}-{dcmO.pdcm_group}_{i}.{image_format}")
 
             array = cv2.normalize(arr[i], None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)  # type: ignore #AWSS
 
@@ -474,17 +479,17 @@ def process_dcm(
         dicomdir_fs.remove(dicomdir_fs.find(Modality="OT"))
         for dcmf in dicomdir_fs.find():
             dcm = dcmread(dcmf.path)
-            dcm.ReferencedFileID = dcmf.path
+            dcm.pdcm_source = dcmf.path
             tmp_dcm_objs.append(dcm)
     elif input_path.is_file():
         dcm = dcmread(input_path)
-        dcm.ReferencedFileID = input_path
+        dcm.pdcm_source = input_path
         tmp_dcm_objs.append(dcm)
     else:
         for file in input_path.rglob("*"):
             if file.is_file() and is_dicom_file(file):
                 dcm = dcmread(file)
-                dcm.ReferencedFileID = file
+                dcm.pdcm_source = file
                 tmp_dcm_objs.append(dcm)
 
     dcm_objs0 = [dcm for dcm in tmp_dcm_objs if dcm.get("Modality")]
@@ -516,14 +521,14 @@ def process_dcm(
                 new_patient_key = patient_2_study.get(patient_id, new_patient_key)
 
         dcms = []
-        sorted_group = sorted(group, key=lambda dcm: dcm.Modality.code)
+        sorted_group = sorted(group, key=lambda dcm: dcm.pdcm_modality.code)
         for dcm in sorted_group:
-            if dcm.Modality == ImageModality.UNKNOWN:
+            if dcm.pdcm_modality == ImageModality.UNKNOWN:
                 typer.secho(
-                    f"\nWARN: Unknown modality for {dcm.ReferencedFileID}\n-> {output_dir}",
+                    f"\nWARN: Unknown modality for {dcm.pdcm_source}\n-> {output_dir}",
                     fg=typer.colors.RED,
                 )
-            dcm.AccessionNumber = 0
+            dcm.pdcm_group = 0
             if not dcm.get("NumberOfFrames"):
                 dcm.NumberOfFrames = 1
             if not keep_patient_key:

@@ -103,7 +103,8 @@ def test_update_modality_opt(dicom_base: FileDataset) -> None:
     """Test updating modality when the modality is OPT."""
     dicom_base.Modality = "OPT"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.OCT  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.OCT
+    assert dicom_base.Modality == "OPT"  # the DICOM element itself is left untouched
 
 
 def test_update_modality_op_topcon(dicom_base: FileDataset) -> None:
@@ -111,7 +112,7 @@ def test_update_modality_op_topcon(dicom_base: FileDataset) -> None:
     dicom_base.Modality = "OP"
     dicom_base.Manufacturer = "TOPCON"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.COLOUR_PHOTO  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.COLOUR_PHOTO
 
 
 def test_update_modality_op_ir(dicom_base: FileDataset) -> None:
@@ -120,7 +121,7 @@ def test_update_modality_op_ir(dicom_base: FileDataset) -> None:
     dicom_base.Manufacturer = "Another Manufacturer"
     dicom_base.SeriesDescription = "SLO IR"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.SLO_INFRARED  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.SLO_INFRARED
 
 
 def test_update_modality_unknown(dicom_base: FileDataset) -> None:
@@ -129,7 +130,7 @@ def test_update_modality_unknown(dicom_base: FileDataset) -> None:
     dicom_base.Manufacturer = "Unknown Manufacturer"
     dicom_base.SeriesDescription = "Unknown Description"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.UNKNOWN  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.UNKNOWN
 
 
 def test_update_modality_unsupported(dicom_base: FileDataset) -> None:
@@ -158,7 +159,7 @@ def test_update_modality_op_various_descriptions(
     dicom_base.Modality = "OP"
     dicom_base.SeriesDescription = description
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is expected_modality  # type: ignore
+    assert dicom_base.pdcm_modality is expected_modality
 
 
 def test_process_dcm_meta_with_D_in_keep_and_mapping(dicom_base: FileDataset) -> None:

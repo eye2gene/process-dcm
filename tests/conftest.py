@@ -31,10 +31,6 @@ def pytest_configure(config: pytest.Config) -> None:
         # Apply warning filters here instead of in pyproject.toml
         # so IDEs (e.g., VS Code, PyCharm) pick them up correctly.
         "error",  # it will make pytest FAIL if an unknown warn is raised
-        # pydicom warns when process-dcm stores Python objects (Path, ImageModality, int) in DICOM elements
-        "ignore:A value of type .* cannot be assigned to a tag with VR:UserWarning",
-        # pydicom warns when a source path is stored in a CS element (grouping by folder)
-        "ignore:The value length .* exceeds the maximum length of .* allowed for VR CS:UserWarning",
         # pydicom.fileset.FileSet stages into a TemporaryDirectory it never cleans up explicitly (no close()),
         # so its finalizer emits this when the FileSet is garbage-collected (DICOMDIR tests)
         "ignore:Implicitly cleaning up <TemporaryDirectory:ResourceWarning",
@@ -136,7 +132,9 @@ def dicom_opotopol() -> FileDataset:
     dataset.Columns = 512
     dataset.Rows = 512
     dataset.NumberOfFrames = 5
-    dataset.AccessionNumber = 0
+    dataset.pdcm_group = (
+        0  # process-dcm's image group counter (set by process_dcm(); plain attribute, not a DICOM element)
+    )
 
     # Add the PerFrameFunctionalGroupsSequence with missing fields to simulate "empty photo_locations"
     functional_group = Dataset()
@@ -175,7 +173,9 @@ def dicom_attribute_error() -> FileDataset:
     dataset.Columns = 512
     dataset.Rows = 512
     dataset.NumberOfFrames = 5
-    dataset.AccessionNumber = 0
+    dataset.pdcm_group = (
+        0  # process-dcm's image group counter (set by process_dcm(); plain attribute, not a DICOM element)
+    )
 
     # Add the PerFrameFunctionalGroupsSequence
     functional_group = Dataset()
@@ -214,7 +214,9 @@ def dicom_with_photo_locations() -> FileDataset:
     dataset.Columns = 512
     dataset.Rows = 512
     dataset.NumberOfFrames = 5
-    dataset.AccessionNumber = 0
+    dataset.pdcm_group = (
+        0  # process-dcm's image group counter (set by process_dcm(); plain attribute, not a DICOM element)
+    )
 
     # Add the PerFrameFunctionalGroupsSequence with valid OphthalmicFrameLocationSequence
     frame_location = Dataset()
@@ -245,8 +247,9 @@ def dicom_base() -> FileDataset:
     )
 
     # Mock setting relevant fields to simulate a basic DICOM file
-    dataset.AccessionNumber = 0
-    dataset.Modality = ImageModality.OCT
+    dataset.Modality = "OPT"
+    dataset.pdcm_modality = ImageModality.OCT  # what update_modality() would resolve for it
+    dataset.pdcm_group = 0
     dataset.PatientBirthDate = "19020202"
     dataset.Manufacturer = ""
     dataset.SeriesDescription = ""
