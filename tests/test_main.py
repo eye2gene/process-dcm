@@ -176,9 +176,10 @@ def test_main_dummy(janitor: list[str], runner: CliRunner) -> None:
         == "c7ba10772ba3a04c18b1616c7bf3df92"
     )
     assert get_md5(of) in [
-        "fb7c7e0fe4e7d3e89e0daae479d013c4",  # local, Pillow < 12
-        "77bb205173d3b15f6131b530a29c2ab7",  # GH, Pillow < 12
-        "8e1531010084c8681f3e21d27206f086",  # Pillow >= 12
+        "fb7c7e0fe4e7d3e89e0daae479d013c4",  # macOS, Pillow < 12
+        "77bb205173d3b15f6131b530a29c2ab7",  # Linux (GH), Pillow < 12
+        "8e1531010084c8681f3e21d27206f086",  # macOS, Pillow >= 12
+        "30b70623445f7c12d8ad773c9738c7ce",  # Linux (GH), Pillow >= 12
     ]
 
 
