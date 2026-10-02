@@ -99,6 +99,11 @@ def meta_images(dcm_obj: FileDataset) -> dict:
     meta["size"]["width"] = dcm_obj.get("Columns", 0)
     meta["size"]["height"] = dcm_obj.get("Rows", 0)
     meta["field_of_view"] = dcm_obj.get("HorizontalFieldOfView")
+    # DICOM instance identity, so downstream tools can associate records with the original objects (parser >= 1.6.0)
+    sop_instance_uid = dcm_obj.get("SOPInstanceUID")
+    sop_class_uid = dcm_obj.get("SOPClassUID")
+    meta["sop_instance_uid"] = str(sop_instance_uid) if sop_instance_uid is not None else None
+    meta["sop_class_uid"] = str(sop_class_uid) if sop_class_uid is not None else None
     meta["source_id"] = f"{mod.code}-{group}"
 
     # Add relative path to source DICOM file if available
@@ -140,9 +145,13 @@ def meta_images(dcm_obj: FileDataset) -> dict:
                 oo = ii.get("OphthalmicFrameLocationSequence")
                 if oo:
                     cc = ii.OphthalmicFrameLocationSequence[0].ReferenceCoordinates
-                    meta["contents"].append(
-                        {"photo_locations": [{"start": {"x": cc[1], "y": cc[0]}, "end": {"x": cc[3], "y": cc[2]}}]}
-                    )
+                    if len(cc) == 4:
+                        # line scan: start and end point
+                        locations = [{"start": {"x": cc[1], "y": cc[0]}, "end": {"x": cc[3], "y": cc[2]}}]
+                    else:
+                        # circular scan: up to four reference points, one entry each (parser >= 1.6.0)
+                        locations = [{"start": {"x": cc[i + 1], "y": cc[i]}} for i in range(0, min(len(cc), 8), 2)]
+                    meta["contents"].append({"photo_locations": locations})
                 else:
                     typer.secho("\nWARN: empty photo_locations", fg=typer.colors.RED)
                     meta["contents"].append({"photo_locations": []})
@@ -169,7 +178,7 @@ def process_dcm_meta(dcm_objs: list[FileDataset], output_dir: Path, mapping: str
     metadata["exam"] = {}
     metadata["series"] = {}
     metadata["images"]["images"] = []
-    metadata["parser_version"] = [1, 5, 3]  # pyright: ignore[reportArgumentType]
+    metadata["parser_version"] = [1, 6, 0]  # pyright: ignore[reportArgumentType]
     metadata["py_dcm_version"] = [int(x) for x in __version__.split(".") if x.isdigit()]  # pyright: ignore[reportArgumentType]
 
     keep_gender = "g" in keep
@@ -486,7 +495,7 @@ def process_dcm(
         dcm.pdcm_source = input_path
         tmp_dcm_objs.append(dcm)
     else:
-        for file in input_path.rglob("*"):
+        for file in sorted(input_path.rglob("*")):  # sorted: deterministic image order across filesystems
             if file.is_file() and is_dicom_file(file):
                 dcm = dcmread(file)
                 dcm.pdcm_source = file

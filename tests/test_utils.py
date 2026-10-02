@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import typer
 from pydicom.dataset import FileDataset
+from pydicom.filereader import dcmread
 from pytest_mock import MockerFixture
 
 from process_dcm.const import ImageModality
@@ -59,6 +60,49 @@ def test_meta_images_with_photo_locations(dicom_with_photo_locations: FileDatase
     assert all("photo_locations" in content and len(content["photo_locations"]) == 1 for content in meta["contents"]), (
         "Photo locations not found or incomplete in metadata"
     )
+
+
+def test_meta_images_sop_uids() -> None:
+    """SOP Instance and Class UIDs are copied verbatim into each image entry (parser 1.6.0)."""
+    dcm = dcmread("tests/example-dcms/bscans.dcm", stop_before_pixels=True)
+    assert update_modality(dcm) is True
+    meta = meta_images(dcm)
+    assert meta["sop_instance_uid"] == str(dcm.SOPInstanceUID)
+    assert meta["sop_class_uid"] == str(dcm.SOPClassUID) == "1.2.840.10008.5.1.4.1.1.77.1.5.4"
+
+
+def test_meta_images_sop_uids_absent(dicom_with_photo_locations: FileDataset) -> None:
+    """Datasets without SOP UIDs still produce the keys, set to null."""
+    update_modality(dicom_with_photo_locations)
+    meta = meta_images(dicom_with_photo_locations)
+    assert meta["sop_instance_uid"] is None
+    assert meta["sop_class_uid"] is None
+
+
+def test_meta_images_circular_scan(dicom_with_photo_locations: FileDataset) -> None:
+    """Circular B-scans (more than four reference coordinates) yield one point per coordinate pair, four at most."""
+    frame = dicom_with_photo_locations.PerFrameFunctionalGroupsSequence[0]
+    frame.OphthalmicFrameLocationSequence[0].ReferenceCoordinates = [
+        10.0,
+        20.0,
+        30.0,
+        40.0,
+        50.0,
+        60.0,
+        70.0,
+        80.0,
+        90.0,
+        100.0,
+    ]
+    update_modality(dicom_with_photo_locations)
+    meta = meta_images(dicom_with_photo_locations)
+    for content in meta["contents"]:
+        assert content["photo_locations"] == [
+            {"start": {"x": 20.0, "y": 10.0}},
+            {"start": {"x": 40.0, "y": 30.0}},
+            {"start": {"x": 60.0, "y": 50.0}},
+            {"start": {"x": 80.0, "y": 70.0}},
+        ]
 
 
 def test_absolute_path_symlink() -> None:
@@ -278,7 +322,7 @@ def test_process_dcm_dummy(temp_dir: str) -> None:
     assert new_old == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__340692_OU_U.DCM", "metadata.json"), bottom)
-        == "a770962058621bd0b4e6e6a5ba5e1e7a"
+        == "f830467715b41a882423c016e40a0da7"
     )
 
 
@@ -289,7 +333,7 @@ def test_process_dcm_dummy_group(temp_dir: str) -> None:
     assert new_old == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__OU_U.DCM", "metadata.json"), bottom)
-        == "a770962058621bd0b4e6e6a5ba5e1e7a"
+        == "f830467715b41a882423c016e40a0da7"
     )
 
 
@@ -300,7 +344,7 @@ def test_process_dcm_dummy_mapping(temp_dir: str) -> None:
     assert pair == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__340692_OU_U.DCM", "metadata.json"), bottom)
-        == "7d60d85ffcf442ccece3948af93873bc"
+        == "20c77ce55beb5ab8c8a0adf3f7be8778"
     )
 
 

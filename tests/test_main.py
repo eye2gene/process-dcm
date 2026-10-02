@@ -90,19 +90,19 @@ def test_cli_without_args(runner: CliRunner) -> None:
     [
         (
             PNG_MD5S,
-            "e762d18b90b39e55cd53094288157eb8",
+            "928eaea84dcf85d710192981663be425",
             "pndg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
             PNG_MD5S,
-            "6d7a42b68af0191f8710cea06ba6c521",
+            "27eb9a93abfa43a7e6d6828bd14e9644",
             "pnDg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
             PNG_MD5S,
-            "f706061cebaba9c14ae96dd595cd7b00",
+            "72a8d7f0f7f043a6746056ba6e826b25",
             "",
             "0780320450",
         ),
@@ -153,7 +153,7 @@ def test_main_group(janitor: list[str], runner: CliRunner) -> None:
         assert len(tof) == 52
         assert (
             get_md5(output_dir / "0780320450_20150624_144600_OD_OCT.DCM" / "metadata.json", bottom)
-            == "ba6648bf45d86752bd20dc72c4ec5b47"
+            == "103860e71d8cf0e3cef29d5b8fa44739"
         )
         assert get_md5(of) in PNG_MD5S
         result = runner.invoke(app, args)
@@ -169,10 +169,11 @@ def test_main_dummy(janitor: list[str], runner: CliRunner) -> None:
     tof = sorted(glob("dummy_dir/**/*"))
     of = [x for x in tof if "metadata.json" not in x]
     assert len(tof) == 3
-    assert get_md5(Path("dummy_dir") / "123456__340692_OU_U.DCM" / "metadata.json", bottom) in [
-        "dfe455bef4335776973b8e0e88e32d18",  # local
-        "3432e7670635837b2631658ef78f7192",  # GH
-    ]
+    # one value only: input files are processed in sorted order, so the image order no longer depends on the filesystem
+    assert (
+        get_md5(Path("dummy_dir") / "123456__340692_OU_U.DCM" / "metadata.json", bottom)
+        == "c7ba10772ba3a04c18b1616c7bf3df92"
+    )
     assert get_md5(of) in [
         "fb7c7e0fe4e7d3e89e0daae479d013c4",  # local, Pillow < 12
         "77bb205173d3b15f6131b530a29c2ab7",  # GH, Pillow < 12
@@ -229,11 +230,11 @@ def test_main_mapping_example_dir(janitor: list[str], runner: CliRunner) -> None
         assert len(of) == 264
         assert (
             get_md5(output_dir / "2910892726_20180724_161901_477b53_OS_OCT.DCM" / "metadata.json", bottom)
-            == "f40efe6f3400bd1bc2345eb472743a61"
+            == "6b022a883bd309be2779a32d3dc4a994"
         )
         assert (
             get_md5(output_dir / "3517807670_20180926_140517_600177_OD_OCT.DCM" / "metadata.json", bottom)
-            == "a040bd108eb762450f205a43ff3d80ec"
+            == "e921b5336d467eb82107bf4b5e4c6282"
         )
         args = ["tests/example_dir", "-o", str(output_dir), "-j", "2", "-k", "nDg", "-m", "tests/map.csv"]
         # result = runner.invoke(app, args)
@@ -257,7 +258,7 @@ def test_main_optos_fa(janitor: list[str], runner: CliRunner) -> None:
         assert len(of) == 2
         assert (
             get_md5(output_dir / "1840002001__44fd1d_OD_OPTOS_FA.DCM" / "metadata.json", bottom)
-            == "fc9e00e17aab58355d949ea205f9f6a6"
+            == "20f995e0f67c8e53b29b93b619881326"
         )
 
 
@@ -289,5 +290,5 @@ def test_optomap(runner: CliRunner) -> None:
         ]
         assert (
             get_md5(output_dir / "252-1052__4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
-            == "3a4e60a2201c9666cbe9700c2c3438de"
+            == "469d14d0e9094cc0523be2405d813e64"
         )
