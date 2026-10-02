@@ -1,108 +1,50 @@
-name: Test and Release Workflow
+name: Release
 
 on:
-  workflow_dispatch:
-  pull_request:
-    branches:
-      - "*" # Run tests on all branches for PRs
   push:
-    branches:
-      - main # Run tests and potentially release on pushes to main
-    paths:
-      - "**/*.py"
-      - pyproject.toml
-      - poetry.lock
+    branches: [main]
+
+permissions:
+  contents: write
+  id-token: write # needed for PyPI trusted publishing
 
 jobs:
-  run-tests:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install dependencies
-        run: |
-          pip install poetry
-          poetry install
-      - name: Run tests
-        run: poetry run pytest -k 'not test_main_mapping_example_dir_relative and not test_main_mapping_example_dir and not test_process_dcm'
+  ci:
+    uses: eye2Gene/e2g-workflows/.github/workflows/python-ci.yml@main
+    with:
+      # process-dcm supports 3.11+ (the reusable default is 3.12/3.13 only)
+      python-versions: '["3.11", "3.12", "3.13"]'
 
   release:
-    name: Release
-    needs: run-tests
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    needs: [ci]
+    concurrency:
+      group: release
+      cancel-in-progress: false
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - name: Install dependencies
-        run: |
-          pip install poetry commitizen
-          poetry install
-      - name: Check if version bump is needed
-        id: check
-        continue-on-error: true
-        run: |
-          cz bump --dry-run || exit 0
-          echo "bump=$(cz bump --dry-run 2>&1 | grep -q 'bump:' && echo 'yes' || echo 'no')" >> $GITHUB_OUTPUT
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Git user
-        if: steps.check.outputs.bump == 'yes'
-        run: |
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git config --global user.name "github-actions[bot]"
+      - uses: astral-sh/setup-uv@main
 
-      - name: Bump version
-        if: steps.check.outputs.bump == 'yes'
-        id: bump
-        run: |
-          cz bump --yes
-          echo "version=$(git describe --tags --abbrev=0)" >> $GITHUB_OUTPUT
-
-      - name: Build project
-        if: steps.check.outputs.bump == 'yes'
-        run: poetry build
-
-      - name: Generate Changelog
-        if: steps.check.outputs.bump == 'yes'
-        id: changelog
-        run: echo "changelog=$(cz changelog)" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        if: steps.check.outputs.bump == 'yes'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.bump.outputs.version }}
-          name: Release ${{ steps.bump.outputs.version }}
-          body: ${{ steps.changelog.outputs.changelog }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish to PyPI
-        if: steps.check.outputs.bump == 'yes'
-        env:
-          PYPI_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-        run: |
-          poetry config pypi-token.pypi $PYPI_PASSWORD
-          poetry publish
-
-      - name: Push changes
-        if: steps.check.outputs.bump == 'yes'
-        uses: ad-m/github-push-action@v0.8.0
+      - name: Python Semantic Release
+        id: release
+        uses: python-semantic-release/python-semantic-release@v9
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.ref }}
+
+      - name: Build package
+        if: steps.release.outputs.released == 'true'
+        run: uv run just build
+
+      - name: Publish to PyPI
+        if: steps.release.outputs.released == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+      - name: Upload to GitHub Release assets
+        if: steps.release.outputs.released == 'true'
+        uses: python-semantic-release/publish-action@v9
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -2,7 +2,6 @@ import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -78,9 +77,11 @@ def test_relative_path() -> None:
 
 
 def test_broken_symlink_as_relative() -> None:
-    with patch("pathlib.Path.is_absolute", return_value=False):
-        with patch("pathlib.Path.resolve", side_effect=FileNotFoundError):
-            assert set_output_dir("/home/user", "exported_data") == "/home/user/exported_data"
+    with (
+        patch("pathlib.Path.is_absolute", return_value=False),
+        patch("pathlib.Path.resolve", side_effect=FileNotFoundError),
+    ):
+        assert set_output_dir("/home/user", "exported_data") == "/home/user/exported_data"
 
 
 def test_relative_path_with_up() -> None:
@@ -164,7 +165,7 @@ def test_process_dcm_meta_with_D_in_keep_and_mapping(dicom_base: FileDataset) ->
     # Call the function with "D" in keep
     with TemporaryDirectory() as tmpdir:
         process_dcm_meta([dicom_base], Path(tmpdir), keep="D", mapping="tests/map.csv")
-        rjson = json.load(open(os.path.join(tmpdir, "metadata.json")))
+        rjson = json.loads((Path(tmpdir) / "metadata.json").read_text())
         assert rjson["patient"]["date_of_birth"] == "1902-01-01"
         assert rjson["patient"]["patient_key"] == "00123"
 
@@ -254,25 +255,25 @@ def test_process_and_save_csv_no_changes(csv_data: list[list[str]]) -> None:
         assert not backup_file.exists(), f"Did not expect backup file {backup_file} to exist"
 
 
-# skip this test for CI
-def test_process_dcm(temp_dir: str, input_dir2: Path, mocker: Any) -> None:
+def test_process_dcm(temp_dir: str, input_dir2: Path, mocker: MockerFixture) -> None:
+    # input_dir2 skips the test when tests/example_dir is not available
     mock_secho = mocker.patch("typer.secho")
     output_dir = Path(temp_dir)
-    p, s, new_old = process_dcm(input_path=input_dir2, output_dir=output_dir, overwrite=True)
+    _, _, new_old = process_dcm(input_path=input_dir2, output_dir=output_dir, overwrite=True)
     output_files_initial = list(output_dir.rglob("*.png"))
     assert len(output_files_initial) == 130, "No images were processed initially."
     assert set(new_old) == {("2910892726", "010-0001")}
 
     # Run process_dcm function with overwrite=False, should skip processing
-    p, s, new_old = process_dcm(input_path=input_dir2, output_dir=Path(temp_dir), overwrite=False)
+    _, _, new_old = process_dcm(input_path=input_dir2, output_dir=Path(temp_dir), overwrite=False)
 
-    msg = f"\nOutput directory '{output_dir / '2910892726_20180724_162720_63d3f1_OS_OCT.DCM'}' already exists with metadata and images. Skipping..."  # noqa: E501
+    msg = f"\nOutput directory '{output_dir / '2910892726_20180724_162720_63d3f1_OS_OCT.DCM'}' already exists with metadata and images. Skipping..."
     mock_secho.assert_called_with(msg, fg=typer.colors.YELLOW)
     assert len(list(output_dir.rglob("*.png"))) == len(output_files_initial)
 
 
 def test_process_dcm_dummy(temp_dir: str) -> None:
-    p, s, new_old = process_dcm(input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True)
+    _, _, new_old = process_dcm(input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True)
     assert new_old == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__340692_OU_U.DCM", "metadata.json"), bottom)
@@ -281,7 +282,7 @@ def test_process_dcm_dummy(temp_dir: str) -> None:
 
 
 def test_process_dcm_dummy_group(temp_dir: str) -> None:
-    p, s, new_old = process_dcm(
+    _, _, new_old = process_dcm(
         input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True, time_group=True
     )
     assert new_old == [("2375458543", "123456")]
@@ -292,7 +293,7 @@ def test_process_dcm_dummy_group(temp_dir: str) -> None:
 
 
 def test_process_dcm_dummy_mapping(temp_dir: str) -> None:
-    p, s, pair = process_dcm(
+    _, _, pair = process_dcm(
         input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True, mapping="tests/map.csv"
     )
     assert pair == [("2375458543", "123456")]

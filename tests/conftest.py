@@ -20,6 +20,29 @@ def pytest_report_header() -> str:
     return f">>>\tVersion: {version}\n"
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Dynamically add filterwarnings rules for pytest when suppression is desired.
+
+    Using addinivalue_line ensures pytest's own warnings plugin honours the filters
+    across the entire test session, without modifying each test file.
+    """
+    rules = [
+        # NOTE: we should know the warnings and address them
+        # Apply warning filters here instead of in pyproject.toml
+        # so IDEs (e.g., VS Code, PyCharm) pick them up correctly.
+        "error",  # it will make pytest FAIL if an unknown warn is raised
+        # pydicom warns when process-dcm stores Python objects (Path, ImageModality, int) in DICOM elements
+        "ignore:A value of type .* cannot be assigned to a tag with VR:UserWarning",
+        # pydicom warns when a source path is stored in a CS element (grouping by folder)
+        "ignore:The value length .* exceeds the maximum length of .* allowed for VR CS:UserWarning",
+        # pydicom.fileset.FileSet stages into a TemporaryDirectory it never cleans up explicitly (no close()),
+        # so its finalizer emits this when the FileSet is garbage-collected (DICOMDIR tests)
+        "ignore:Implicitly cleaning up <TemporaryDirectory:ResourceWarning",
+    ]
+    for rule in rules:
+        config.addinivalue_line("filterwarnings", rule)
+
+
 def remove_ansi_codes(text: str) -> str:
     ansi_escape = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
     return ansi_escape.sub("", text)
@@ -83,7 +106,11 @@ def input_dir() -> Path:
 
 @pytest.fixture(scope="module")
 def input_dir2() -> Path:
-    return Path("tests/example_dir/010-0001/20180724_L").resolve()
+    """Sample study inside tests/example_dir (~625 MB, not in git); skips dependent tests when absent."""
+    path = Path("tests/example_dir/010-0001/20180724_L").resolve()
+    if not path.is_dir():
+        pytest.skip("tests/example_dir is not available")
+    return path
 
 
 @pytest.fixture

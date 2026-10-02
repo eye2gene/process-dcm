@@ -2,107 +2,163 @@
 name = "process-dcm"
 version = "0.10.0"
 description = "Python library and app to extract images from DCM in a JSON-based standard format"
-authors = [
-    { name = "Alan Silva", email = "3899850+alanwilter@users.noreply.github.com" },
-]
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11,<4.0"
 license = "MIT"
+authors = [
+  { name = "Alan Wilter", email = "alan.wilter@eye2gene.com" },
+  { name = "Eye2Gene", email = "dev@eye2gene.com" },
+]
+maintainers = [{ name = "Eye2Gene", email = "dev@eye2gene.com" }]
+keywords = ["dicom", "ophthalmology", "oct", "image-extraction", "metadata"]
 classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: Healthcare Industry",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering :: Medical Science Apps.",
+  "Typing :: Typed",
 ]
 dependencies = [
-    "opencv-python-headless>=4.12.0.88",
-    "typer>=0.16.0",
-    "pydicom>=3.0.1",
-    "pillow>=11.3.0",
-    "python-gdcm>=3.0.25",
+  "numpy>=1.26",
+  "opencv-python-headless>=4.12.0.88",
+  "pillow>=11.3.0",
+  "pydicom>=3.0.1",
+  "python-gdcm>=3.0.25",
+  "rich>=13.0",
+  "typer>=0.16.0",
 ]
 
 [project.urls]
-repository = "https://github.com/pontikos-lab/process-dcm"
+changelog = "https://github.com/eye2Gene/process-dcm/blob/main/CHANGELOG.md"
+documentation = "https://github.com/eye2Gene/process-dcm#readme"
+homepage = "https://github.com/eye2Gene/process-dcm"
+issues = "https://github.com/eye2Gene/process-dcm/issues"
+repository = "https://github.com/eye2Gene/process-dcm"
 
 [project.scripts]
 process-dcm = "process_dcm.main:cli"
 
-[tool.poetry]
-requires-poetry = ">=2.0"
-packages = [{ include = "process_dcm" }]
+[dependency-groups]
+dev = [
+  { include-group = "lint" },
+  { include-group = "test" },
+  { include-group = "tools" },
+]
+lint = [
+  "licensecheck",
+  "ruff",
+]
+test = [
+  "ipdb",
+  "pdbpp",
+  "pytest",
+  "pytest-cov",
+  "pytest-mock",
+  "pytest-xdist",
+  "ty",
+]
+tools = ["cruft", "rust-just"]
 
-[tool.poetry.group.dev.dependencies]
-boto3-stubs = { extras = ["lambda", "s3"], version = "1.39.3" }
-ipdb = "0.13.13"
-ipython = "8.37.0"
-mypy = "1.16.1"
-mypy-boto3-lambda = "1.39.0"
-mypy-boto3-s3 = "1.39.2"
-pandas-stubs = "2.3.0.250703"
-pdbpp = "0.11.6"
-pip = "25.1.1"
-pre-commit = "4.2.0"
-pytest-cov = "6.2.1"
-pytest-env = "1.1.5"
-pytest-xdist = "3.8.0"
-ruff = "0.12.2"
-typed-argument-parser = "1.10.1"
-wheel = "0.45.1"
-pytest-mock = "^3.14.1"
-
-[tool.pytest.ini_options]
-addopts = "tests --cov=process_dcm/ --cov-report=term-missing:skip-covered --cov-report=xml --dist=loadgroup -n 8 --durations=5"
+[build-system]
+requires = ["uv_build>=0.9.0,<0.13.0"]
+build-backend = "uv_build"
 
 [tool.coverage.report]
 omit = ["__main__.py"]
-exclude_lines = ["no cov", "if __name__ == .__main__.:", "if TYPE_CHECKING:"]
+fail_under = 50  # minimum coverage required, but aim for 100% though
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if typing.TYPE_CHECKING:",
+  "@overload",
+  "@typing.overload",
+  "class .*\\bProtocol\\):",
+  "@(abc\\.)?abstractmethod",
+  "raise NotImplementedError",
+  "\\.\\.\\.",
+  "no cov",
+  "if __name__ == .__main__.:",
+]
+
+[tool.pytest]
+addopts = [
+  "--cov-branch",
+  "--cov-report=term-missing:skip-covered",
+  "--cov-report=xml",
+  "--cov=src/",
+  "--cov=tests/",
+  "--dist=loadscope",
+  "--durations=5",
+  "-n",
+  "auto",  # parallel by default (template default is 0); `just pdb` forces -n 0
+]
+filterwarnings = []
+testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"  # lowest supported version; move to py312 once all Eye2Gene consumers are on 3.12
 line-length = 120
 
 [tool.ruff.format]
 docstring-code-format = true
 
 [tool.ruff.lint]
-extend-select = ["UP", "RUF", "I", "D", "E501"]
-ignore = ["UP036"]
+select = [
+  "ANN",  # check typings
+  "B",  # flake8-bugbear
+  "D",  # check docstrings
+  "E",  # pycodestyle errors
+  "F",  # Pyflakes
+  "I",  # isort
+  "RUF",  # Ruff-specific rules
+  "SIM",  # Common simplification rules
+  "TC",  # Enforce importing certain types in a TYPE_CHECKING block
+  "TD",  # Be diligent with TODO comments
+  "TID",  # Some good import practices
+  "UP",  # Warn if certain things can changed due to newer Python versions
+  "W",  # PyCodeStyle warnings
+  "S",  # security issues
+]
+ignore = [
+  "E501",  # line length (handled by ruff format for code)
+  "B008",  # function call in defaults (standard typer pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D", "S"]  # ["UP", "RUF", "I", "D", "E501"]
+"__main__.py" = ["D100"]
+"__init__.py" = ["D104"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["D100", "D103", "D104"]
-"__main__.py" = ["D100"]
-"__init__.py" = ["D104"]
+[tool.ty]
+# All rules are enabled as "error" by default; no need to specify unless overriding.
 
-[tool.mypy]
-python_version = "3.10"
-# exclude = 'tests/'
-strict = true
-disable_error_code = ["type-arg"]
+[tool.ty.environment]
+python = ".venv"
 
-# NOTE: uncomment these lines and edit accordingly if you have modules still without typings
-[[tool.mypy.overrides]]
-module = ["pytest_mock.*"]
-ignore_missing_imports = true
+[tool.ty.src]
+include = ["src"]
 
-[tool.commitizen]
-name = "cz_conventional_commits"
-tag_format = "v$version"
-version_files = [
-    "process_dcm/__init__.py",
-    "pyproject.toml",
-    "process_dcm/main.py",
+[tool.ty.terminal]
+error-on-warning = true
+
+[tool.uv]
+exclude-newer = "7 days"
+package = true
+default-groups = ["dev"]
+cache-keys = [
+  { file = "pyproject.toml" },
+  { git = { commit = true, tags = true } }
 ]
-version_scheme = "pep440"
-version_provider = "pep621"
-update_changelog_on_bump = true
-major_version_zero = true
 
-[tool.poetry.requires-plugins]
-poetry-bumpversion = ">=0.3.3"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): {version}"

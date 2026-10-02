@@ -12,6 +12,10 @@ from process_dcm.main import app
 from process_dcm.utils import get_md5
 from tests.conftest import bottom, remove_ansi_codes
 
+# ~625 MB of sample DICOMs deliberately kept out of git (see README "Test data")
+EXAMPLE_DIR = Path("tests/example_dir")
+requires_example_dir = pytest.mark.skipif(not EXAMPLE_DIR.is_dir(), reason="tests/example_dir is not available")
+
 
 def test_main_defaults(runner: CliRunner) -> None:
     result = runner.invoke(app, ["input_path"])
@@ -63,30 +67,38 @@ def test_main_with_options(
     assert expected_output in result.output
 
 
+# PNG bytes depend on the Pillow encoder version even though pixels are identical
+PNG_MD5S = [
+    "5ba37cc43233db423394cf98c81d5fbc",  # GH, Pillow < 12
+    "a726b59587ca4ea1a478802e3ee9235c",  # local, Pillow < 12
+    "19a3a9b1922447053ca0bce8ba785767",  # Pillow >= 12
+]
+
+
 def test_cli_without_args(runner: CliRunner) -> None:
     result = runner.invoke(app)
     assert result.exit_code == 2
     output = remove_ansi_codes(result.stderr)
-    assert "Missing argument 'INPUT_PATH'" in output
+    assert "Missing argument" in output  # metavar rendering differs across typer versions
 
 
 @pytest.mark.parametrize(
     "md5, meta, keep, key",
     [
         (
-            ["5ba37cc43233db423394cf98c81d5fbc", "a726b59587ca4ea1a478802e3ee9235c"],
+            PNG_MD5S,
             "e762d18b90b39e55cd53094288157eb8",
             "pndg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
-            ["5ba37cc43233db423394cf98c81d5fbc", "a726b59587ca4ea1a478802e3ee9235c"],
+            PNG_MD5S,
             "6d7a42b68af0191f8710cea06ba6c521",
             "pnDg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
-            ["5ba37cc43233db423394cf98c81d5fbc", "a726b59587ca4ea1a478802e3ee9235c"],
+            PNG_MD5S,
             "f706061cebaba9c14ae96dd595cd7b00",
             "",
             "0780320450",
@@ -140,10 +152,7 @@ def test_main_group(janitor: list[str], runner: CliRunner) -> None:
             get_md5(output_dir / "0780320450_20150624_144600_OD_OCT.DCM" / "metadata.json", bottom)
             == "ba6648bf45d86752bd20dc72c4ec5b47"
         )
-        assert get_md5(of) in [
-            "a726b59587ca4ea1a478802e3ee9235c",  # local
-            "5ba37cc43233db423394cf98c81d5fbc",  # GH
-        ]
+        assert get_md5(of) in PNG_MD5S
         result = runner.invoke(app, args)
         assert result.exit_code == 0
         assert "0780320450_20150624_144600_OD_OCT.DCM' already exists with metadata" in result.output
@@ -162,8 +171,9 @@ def test_main_dummy(janitor: list[str], runner: CliRunner) -> None:
         "3432e7670635837b2631658ef78f7192",  # GH
     ]
     assert get_md5(of) in [
-        "fb7c7e0fe4e7d3e89e0daae479d013c4",  # local
-        "77bb205173d3b15f6131b530a29c2ab7",  # GH
+        "fb7c7e0fe4e7d3e89e0daae479d013c4",  # local, Pillow < 12
+        "77bb205173d3b15f6131b530a29c2ab7",  # GH, Pillow < 12
+        "8e1531010084c8681f3e21d27206f086",  # Pillow >= 12
     ]
 
 
@@ -202,7 +212,7 @@ def test_main_no_dicom(runner: CliRunner, tmp_path: Path) -> None:
     assert output == f"\nNo DICOM files found in {tmp_path}\n"
 
 
-# skip this test for CI
+@requires_example_dir
 def test_main_mapping_example_dir(janitor: list[str], runner: CliRunner) -> None:
     janitor.append("study_2_patient.csv")
     janitor.append("study_2_patient_1.csv")
@@ -269,7 +279,11 @@ def test_optomap(runner: CliRunner) -> None:
         result = runner.invoke(app, args)
         assert result.exit_code == 0
         md5 = get_md5(output_dir / "252-1052__4eb9d4_OS_PCUWF.DCM/PCUWF-0_0.png")
-        assert md5 in ["8ef9cf6a4eb98b80129c398368cf1925", "6124405b60c88310f072fb31b207805d"]
+        assert md5 in [
+            "8ef9cf6a4eb98b80129c398368cf1925",  # Pillow < 12
+            "6124405b60c88310f072fb31b207805d",  # Pillow < 12
+            "c3fa82e02662f5bd24e18768c0440204",  # Pillow >= 12
+        ]
         assert (
             get_md5(output_dir / "252-1052__4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
             == "3a4e60a2201c9666cbe9700c2c3438de"

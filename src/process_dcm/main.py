@@ -17,6 +17,7 @@ warnings.filterwarnings(
 )
 
 TOL = 2.0
+HELP = f"Process DICOM files in subfolders, extract images and metadata.\n\nVersion: {__version__}"
 
 app = typer.Typer(context_settings={"help_option_names": ["-h", "--help"]})
 
@@ -28,7 +29,7 @@ def print_version(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.command()
+@app.command(help=HELP)
 def main(
     input_path: Path = typer.Argument(..., help="Input path to either a DCM file or a folder containing DICOM files."),
     image_format: str = typer.Option(
@@ -54,7 +55,7 @@ def main(
         "",
         "-m",
         "--mapping",
-        help=f"""Path to CSV containing patient_id to study_id mapping. If not provided and patient_id is anonymised, a '{RESERVED_CSV}' file will be generated.""",  # noqa: E501
+        help=f"""Path to CSV containing patient_id to study_id mapping. If not provided and patient_id is anonymised, a '{RESERVED_CSV}' file will be generated.""",
     ),
     keep: str = typer.Option(
         "",
@@ -74,10 +75,7 @@ def main(
         help="Prints app version.",
     ),
 ) -> None:
-    """Process DICOM files in subfolders, extract images and metadata.
-
-    Version: 0.10.0
-    """
+    """Process DICOM files in subfolders, extract images and metadata."""
     keep_patient_key = "p" in keep
     if not keep_patient_key:
         if mapping == RESERVED_CSV:

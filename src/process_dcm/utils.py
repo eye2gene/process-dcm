@@ -1,5 +1,6 @@
 """utils module."""
 
+import contextlib
 import csv
 import filecmp
 import hashlib
@@ -173,10 +174,9 @@ def process_dcm_meta(dcm_objs: list[FileDataset], output_dir: Path, mapping: str
     keep_names = "n" in keep
     anon_pat_key = "p" not in keep
     study_2_patient = {}
-    if anon_pat_key:
-        if mapping:
-            study_2_patient = dict(read_csv(mapping))
-            anon_pat_key = False
+    if anon_pat_key and mapping:
+        study_2_patient = dict(read_csv(mapping))
+        anon_pat_key = False
 
     for dcm_obj in dcm_objs:
         patient_key = dcm_obj.get("PatientID", "")
@@ -317,7 +317,7 @@ def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> d
             try:
                 acquisition_datetime = parse_datetime(acquisition_datetime_str)
                 # Find the closest group within the tolerance
-                for group_time_str, group in grouped_dcms.items():
+                for group_time_str in grouped_dcms:
                     if group_time_str != "unknown":
                         group_time = parse_datetime(group_time_str)
                         if abs(acquisition_datetime - group_time) <= timedelta(seconds=tol):
@@ -590,7 +590,7 @@ def is_dicom_file(filepath: str | Path) -> bool:
 
 def get_md5(file_path: Path | str | list[str] | list[Path], minus: int = 0) -> str:
     """Calculate the MD5 checksum of a file or list of files, optionally suppressing lines from the bottom."""
-    md5_hash = hashlib.md5()
+    md5_hash = hashlib.md5(usedforsecurity=False)  # checksum only, not a security primitive
 
     def process_file(file: Path | str) -> None:
         with open(file, "rb") as f:
@@ -651,10 +651,11 @@ def save_to_temp_file(data: list[list[str]]) -> str:
     Returns:
         str: The path of the temporary file.
     """
-    temp_file = tempfile.NamedTemporaryFile(delete=False, mode="w", newline="", suffix=".csv")
-    temp_file.close()  # Close the NamedTemporaryFile to be reused by write_to_csv
-    write_to_csv(temp_file.name, data, header=["study_id", "patient_id"])
-    return temp_file.name
+    # Close the NamedTemporaryFile first so it can be reused by write_to_csv
+    with tempfile.NamedTemporaryFile(delete=False, mode="w", newline="", suffix=".csv") as temp_file:
+        temp_name = temp_file.name
+    write_to_csv(temp_name, data, header=["study_id", "patient_id"])
+    return temp_name
 
 
 def files_are_identical(file1: str | Path, file2: str | Path) -> bool:
@@ -724,7 +725,7 @@ def read_csv(file_path: str | Path) -> list[list[str]]:
         return list(reader)
 
 
-def write_to_csv(file_path: str | Path, data: list[list[str]], header: list[str] = []) -> None:
+def write_to_csv(file_path: str | Path, data: list[list[str]], header: list[str] | None = None) -> None:
     """Writes data to a CSV file at the specified file path.
 
     Args:
@@ -769,17 +770,13 @@ def delete_if_empty(folder_path: str | Path, n_jobs: int = 1) -> bool:
             if item.is_file():
                 is_empty = False
                 break
-            if item.is_dir():
-                if not delete_if_empty(item, n_jobs=1):  # Recursive call, but without parallelism
-                    is_empty = False
-                    break
+            if item.is_dir() and not delete_if_empty(item, n_jobs=1):  # Recursive call, but without parallelism
+                is_empty = False
+                break
 
         if is_empty:
-            with lock:
-                try:
-                    folder.rmdir()
-                except FileNotFoundError:  # no cov AWSS
-                    pass
+            with lock, contextlib.suppress(FileNotFoundError):
+                folder.rmdir()
 
         return is_empty
 

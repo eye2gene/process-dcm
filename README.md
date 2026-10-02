@@ -1,44 +1,51 @@
 # Process DCM
 
-[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=plastic)](https://github.com/pontikos-lab/process-dcm/graphs/commit-activity)
-[![GitHub](https://img.shields.io/github/license/pontikos-lab/process-dcm?style=plastic)](https://github.com/pontikos-lab/process-dcm)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/pontikos-lab/process-dcm?display_name=tag&logo=github&style=plastic)](https://github.com/pontikos-lab/process-dcm)
-[![GitHub Release](https://img.shields.io/github/release-date/pontikos-lab/process-dcm?style=plastic&logo=github)](https://github.com/pontikos-lab/process-dcm)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=plastic)](https://github.com/eye2Gene/process-dcm/graphs/commit-activity)
+[![GitHub](https://img.shields.io/github/license/eye2Gene/process-dcm?style=plastic)](https://github.com/eye2Gene/process-dcm)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/eye2Gene/process-dcm?display_name=tag&logo=github&style=plastic)](https://github.com/eye2Gene/process-dcm/releases)
+[![GitHub Release](https://img.shields.io/github/release-date/eye2Gene/process-dcm?style=plastic&logo=github)](https://github.com/eye2Gene/process-dcm/releases)
 [![PyPI](https://img.shields.io/pypi/v/process-dcm?style=plastic&logo=pypi)](https://pypi.org/project/process-dcm/)
-[![Poetry](https://img.shields.io/endpoint?style=plastic&url=https://python-poetry.org/badge/v0.json)](https://python-poetry.org/)
+[![Python](https://img.shields.io/pypi/pyversions/process-dcm?style=plastic&logo=python)](https://pypi.org/project/process-dcm/)
+[![uv](https://img.shields.io/endpoint?style=plastic&url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![Ruff](https://img.shields.io/endpoint?style=plastic&url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white&style=plastic)](https://github.com/pre-commit/pre-commit)
+[![ty](https://img.shields.io/endpoint?style=plastic&url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
 
 ## About The Project
 
-Python library and app to extract images from DCM files with metadata in a JSON-based standard format
+Python library and app to extract images from DCM files with metadata in a JSON-based standard format.
+
+It targets ophthalmic DICOMs (OCT, fundus photography, fluorescein angiography, SLO, Optomap, ...), writes one folder
+per acquisition with the extracted frames as PNG/JPG/WEBP plus a `metadata.json`, and can anonymise patient
+identifiers while keeping a `study_id -> patient_id` mapping.
 
 ## Installation and Usage
 
 ```bash
 pip install process-dcm
+# or, without touching your environment
+uvx process-dcm --help
 ```
 
 ```bash
- Usage: process-dcm [OPTIONS] INPUT_PATH
+ Usage: process-dcm [OPTIONS] {input_path}
 
  Process DICOM files in subfolders, extract images and metadata.
- Version: 0.9.0
+
+ Version: 0.10.0
 
 ╭─ Arguments ───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    input_path      PATH  Input path to either a DCM file or a folder containing DICOM files. [default: None] [required] │
+│ *    input_path      <path>  Input path to either a DCM file or a folder containing DICOM files. [required]               │
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ --image_format        -f      TEXT     Image format for extracted images (png, jpg, webp). [default: png]                 │
-│ --output_dir          -o      PATH     Output directory for extracted images and metadata. [default: exported_data]       │
+│ --image_format        -f      <str>    Image format for extracted images (png, jpg, webp). [default: png]                 │
+│ --output_dir          -o      <path>   Output directory for extracted images and metadata. [default: exported_data]       │
 │ --group               -g               Re-group DICOM files in a given folder by AcquisitionDateTime.                     │
-│ --tol                 -t      FLOAT    Tolerance in seconds for grouping DICOM files by AcquisitionDateTime. Only used    │
+│ --tol                 -t      <float>  Tolerance in seconds for grouping DICOM files by AcquisitionDateTime. Only used    │
 │                                        when --group is set.                                                               │
-│                                        [default: None]                                                                    │
-│ --n_jobs              -j      INTEGER  Number of parallel jobs. [default: 1]                                              │
-│ --mapping             -m      TEXT     Path to CSV containing patient_id to study_id mapping. If not provided and         │
+│ --n_jobs              -j      <int>    Number of parallel jobs. [default: 1]                                              │
+│ --mapping             -m      <str>    Path to CSV containing patient_id to study_id mapping. If not provided and         │
 │                                        patient_id is anonymised, a 'study_2_patient.csv' file will be generated.          │
-│ --keep                -k      TEXT     Keep the specified fields (p: patient_key, n: names, d: date_of_birth, D:          │
+│ --keep                -k      <str>    Keep the specified fields (p: patient_key, n: names, d: date_of_birth, D:          │
 │                                        year-only DOB, g: gender)                                                          │
 │ --overwrite           -w               Overwrite existing images if found.                                                │
 │ --reset               -r               Reset the output directory if it exists.                                           │
@@ -50,52 +57,173 @@ pip install process-dcm
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-## For Developers
+Output layout:
 
-To run this project locally, you will need to install the prerequisites and follow the installation section.
+```txt
+exported_data/
+└── {PatientKey}_{DateTime}_{Laterality}_{Modality}.DCM/
+    ├── {Modality}-{GroupID}_{FrameIndex}.{png|jpg|webp}
+    └── metadata.json
+```
 
-### Prerequisites
+## Project structure
 
-This Project depends on the [`poetry`](https://python-poetry.org/).
+```txt
+process-dcm/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml              # Calls reusable CI from e2g-workflows
+│       └── release.yml         # Semantic release + publish on main
+├── .kiro/
+│   └── steering/
+│       ├── commits.md          # Conventional commit rules for Kiro
+│       ├── python.md           # Python coding standards for Kiro
+│       └── safety.md           # Command safety guardrails for Kiro
+├── .vscode/
+│   ├── extensions.json         # Recommended VS Code/Kiro extensions
+│   └── settings.json           # Editor settings (Ruff, pytest, etc.)
+├── src/
+│   └── process_dcm/
+│       ├── __init__.py         # Package version via importlib.metadata
+│       ├── __main__.py         # python -m support
+│       ├── main.py             # Typer CLI entry point (`process-dcm`)
+│       ├── const.py            # ImageModality / ModalityFlag enums
+│       ├── py.typed            # PEP 561 typing marker
+│       └── utils.py            # DICOM processing, grouping, metadata
+├── tests/
+│   ├── conftest.py             # Shared pytest fixtures and warning filters
+│   ├── test_*.py
+│   └── <sample DICOMs>         # Small fixtures committed to git
+├── .cruft.json                 # Links project to e2g-pypkg template
+├── .editorconfig               # Editor-agnostic formatting rules
+├── .gitignore
+├── .python-version             # Pin Python version for uv
+├── CLAUDE.md                   # AI rules for Claude CLI/VS Code
+├── README.md
+├── justfile                    # Command runner (just qa, just test, etc.)
+└── pyproject.toml              # Project metadata, deps, tool config
+```
 
-1. Install poetry, via `homebrew` or [`pipx`](https://github.com/pypa/pipx):
+**Key files:**
 
-   ```bash
-   brew install poetry
-   ```
+- **`.github/workflows/`** — CI calls the shared [e2g-workflows](https://github.com/eye2Gene/e2g-workflows) reusable workflow. CI logic is centralised there.
+- **`.kiro/steering/`** — AI steering rules loaded automatically by Kiro. Enforces team coding standards.
+- **`CLAUDE.md`** — Same AI rules for Claude CLI/VS Code users, plus project-specific notes.
+- **`.vscode/`** — Shared editor settings (Ruff format-on-save, pytest discovery, recommended extensions). Works in VS Code and Kiro out of the box.
+- **`justfile`** — Single interface for all dev commands. CI uses the same recipes, so local and CI behaviour match.
+- **`.cruft.json`** — Template tracking. Run `cruft update` to pull improvements from [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg).
 
-   or
+## Development
 
-   ```bash
-   pipx install poetry
-   ```
+Requirements: [uv](https://docs.astral.sh/uv/getting-started/installation/). `just` is installed into the
+environment by `uv sync` (`rust-just`), so `uv run just ...` always works; a system-wide `just` is optional.
 
-2. Don't forget to use the python environment you set before and, if using `VScode`, apply it there.
+```bash
+# Clone the repo
+git clone git@github.com:eye2Gene/process-dcm.git
+cd process-dcm
 
-3. It's optional, but we strongly recommend [`commitizen`](https://github.com/commitizen-tools/commitizen), which follows [Conventional Commits](https://www.conventionalcommits.org/)
+# Create the virtual environment (uses .python-version -> 3.12)
+uv venv
 
-### Installation
+# Activate the virtual environment
+source .venv/bin/activate
 
-1. Clone the repo
+# Install the project (editable) and all dev dependency groups
+uv sync
+```
 
-   ```sh
-   git clone https://github.com/pontikos-lab/process-dcm
-   cd process-dcm
-   ```
+Python 3.11 is the minimum supported version; development and CI default to 3.12, and CI also tests 3.11 and 3.13.
 
-## Bumping Version
+Run tests (parallel, with coverage):
 
-We use [`commitizen`](https://github.com/commitizen-tools/commitizen), which follows [Conventional Commits](https://www.conventionalcommits.org/). The instructions below are only for exceptional cases.
+```bash
+just test             # or: uv run pytest
+just test -k optomap  # pass any pytest args through
+just pdb              # single process, drop into the debugger on failure
+```
 
-1. Using [poetry-bumpversion](https://github.com/monim67/poetry-bumpversion). Bump the version number by running `poetry version [part] [--dry-run]` where `[part]` is `major`, `minor`, or `patch`, depending on which part of the version number you want to bump.
+Run quality checks (format, lint, type check with ty, dependency audit, then tests):
 
-   Use `--dry-run` option to check it in advance.
+```bash
+just qa       # fixes what it can
+just ci       # check only, what CI runs
+just qa-all   # qa + tests
+```
 
-1. Push the tagged commit created above and the tag itself, i.e.:
+### Test data
 
-   ```bash
-   ver_tag=$(poetry version | cut -d ' ' -f2)
-   git tag -a v"$ver_tag" -m "Tagged version $ver_tag"
-   git push
-   git push --tags
-   ```
+Most fixtures are small DICOMs committed under `tests/`. The larger sample set `tests/example_dir` (about 625 MB) is
+**not** in git (see `.gitignore`); the tests that depend on it are skipped automatically when the folder is absent, both
+locally and in CI. If you need them, ask the maintainers for a copy and unpack it at `tests/example_dir/`.
+
+Maintainers may also keep a `tests_local/` folder, ignored by git, with smoke tests that run process-dcm on
+vendor-conversion outputs: Topcon FDA and Heidelberg E2E files exported to DICOM with
+[OCT-Converter](https://github.com/marksgraham/OCT-Converter), plus a Heidelberg DICOMDIR export. That data cannot
+be shared, so the folder exists only on maintainers' machines and is not part of `just test`; run it explicitly with
+`uv run pytest tests_local`. Its own README explains where the data comes from and how to regenerate it.
+
+Several tests compare MD5 hashes of generated PNGs. PNG bytes depend on the Pillow encoder version even when the pixels
+are identical, so the expected hash lists accept one value per known encoder. If a dependency bump changes a hash,
+verify the pixels are unchanged before adding the new value.
+
+## How releases work
+
+This project uses [conventional commits](https://www.conventionalcommits.org/) and [python-semantic-release](https://python-semantic-release.readthedocs.io/):
+
+1. Develop on a feature branch with conventional commit messages (`feat:`, `fix:`, `docs:`, etc.)
+2. Open a PR and merge to `main` when tests pass
+3. On merge, GitHub Actions automatically:
+   - Determines the next version from commit messages
+   - Updates the changelog
+   - Creates a git tag and GitHub Release
+   - Builds and publishes the package
+
+Never edit the version number by hand: it lives only in `pyproject.toml` and is read at runtime via
+`importlib.metadata` (`process_dcm.__version__`).
+
+## Publishing to PyPI
+
+This project publishes to [PyPI.org](https://pypi.org/project/process-dcm/) using [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (OIDC). No tokens needed — the repo is configured as a trusted publisher on PyPI (owner `eye2Gene`, repository `process-dcm`, workflow `release.yml`).
+
+## AI-assisted development
+
+This project includes configuration for AI coding assistants:
+
+- **Kiro**: `.kiro/steering/` contains rules for Python style, commit messages, and command safety
+- **Claude**: `CLAUDE.md` contains the same rules in Claude's format
+
+These are committed to git so all contributors get consistent AI behaviour. No personal setup required — just open the project in Kiro or Claude and the rules apply automatically.
+
+## Keeping up with template updates
+
+This project follows the [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg) template and uses [cruft](https://cruft.github.io/cruft/) to stay in sync with template improvements.
+
+Check if there are template updates available:
+
+```bash
+uv run cruft check
+```
+
+See what would change:
+
+```bash
+uv run cruft diff
+```
+
+Apply template updates to your project:
+
+```bash
+uv run cruft update
+```
+
+If there are merge conflicts, cruft will create `.rej` files showing the rejected changes. Resolve them manually, then commit.
+
+> **Tip:** Run `cruft update` on a clean branch so you can review the changes in a PR.
+
+## Author
+
+Process DCM was created in 2024 by Alan Wilter at the Moorfields Ophthalmic Reading Centre & Clinical AI Lab and is
+maintained by [Eye2Gene](https://github.com/eye2Gene). Licensed under the [MIT License](LICENSE).
+
+Aligned with the [eye2Gene/e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg) project template.

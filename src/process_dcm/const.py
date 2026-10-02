@@ -1,7 +1,6 @@
 """constant classes."""
 
 from enum import Enum, Flag, auto, unique
-from typing import cast
 
 RESERVED_CSV = "study_2_patient.csv"
 
@@ -123,7 +122,7 @@ class ImageModality(Enum):
 
     def __str__(self) -> str:
         """Return the modality code."""
-        return cast(str, self.value)
+        return str(self.value)
 
     @property
     def is_colour(self) -> bool:

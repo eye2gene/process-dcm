@@ -1,0 +1,29 @@
+{
+  "recommendations": [
+    // Python
+    "ms-python.python", // Python language support
+    "ms-python.vscode-pylance", // For completions/IntelliSense only
+    "ms-python.debugpy", // Python debugging
+    "astral-sh.ty", // Astral Typer for Python type checking (preferred over mypy)
+    "charliermarsh.ruff-vscode", // Ruff linting integration
+    "ryanluker.vscode-coverage-gutters", // Code coverage
+    // Git
+    "eamodio.gitlens", // GitLens for enhanced Git capabilities
+    "mhutchie.git-graph", // Git graph
+    "donjayamanne.githistory", // Git history
+    "vivaxy.vscode-conventional-commits", // Conventional commits support
+    "GitHub.vscode-pull-request-github", // GitHub Pull Requests and Issues
+    // File formats
+    "tombi-toml.tombi", // TOML formatter/linter
+    "redhat.vscode-yaml", // YAML support
+    "DavidAnson.vscode-markdownlint", // Markdown linting
+    "yzhang.markdown-all-in-one", // Markdown support
+    "nefrob.vscode-just-syntax", // Justfile formatter/syntax highlighting
+    // Editor
+    "editorconfig.editorconfig", // EditorConfig support
+    "esbenp.prettier-vscode", // Prettier for code formatting
+    "streetsidesoftware.code-spell-checker", // Spell checking
+    "fill-labs.dependi", // Dependency graph
+    "streetsidesoftware.code-spell-checker" // Spell checker
+  ]
+}

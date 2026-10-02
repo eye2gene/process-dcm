@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "justfile"
+      - ".github/**"
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: eye2Gene/e2g-workflows/.github/workflows/python-ci.yml@main
+    with:
+      # process-dcm supports 3.11+ (the reusable default is 3.12/3.13 only)
+      python-versions: '["3.11", "3.12", "3.13"]'
