@@ -1,3 +1,4 @@
+import json
 import shutil
 from glob import glob
 from pathlib import Path
@@ -294,3 +295,88 @@ def test_optomap(runner: CliRunner) -> None:
             get_md5(output_dir / "252-1052_20250102_100023_4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
             == "3d7ac9c2b41a55e720fad699e7958f01"
         )
+
+
+# --- opt-in output layout: --preserve_folder_structure / --keep_dcm_name_as_folder / --relative_source_file ------
+
+
+def _nested_dummy_tree(root: Path) -> Path:
+    """Copy the two dummy DICOMs (same FrameOfReferenceUID, so one group) into a small nested input tree."""
+    src = root / "in"
+    (src / "a" / "b").mkdir(parents=True)
+    (src / "c").mkdir()
+    shutil.copy("tests/dummy_ex/dummy.dcm", src / "a" / "b" / "dummy.dcm")
+    shutil.copy("tests/dummy_ex/wrong_acqui_time.dcm", src / "c" / "wrong_acqui_time.dcm")
+    return src
+
+
+def _output_files(out: Path) -> list[str]:
+    return sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
+
+
+def _source_files(out: Path) -> list[str]:
+    files: list[str] = []
+    for meta in sorted(out.rglob("metadata.json")):
+        files.extend(image["source_file"] for image in json.loads(meta.read_text())["images"]["images"])
+    return files
+
+
+def test_preserve_folder_structure_mirrors_input_tree(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src), "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    # the whole group lands under the first file's folder, named after that file
+    assert _output_files(out) == ["a/b/dummy/U-0_0.png", "a/b/dummy/U-1_0.png", "a/b/dummy/metadata.json"]
+
+
+def test_preserve_folder_structure_without_dcm_name_folder(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src), "-o", str(out), "-k", "pndg", "-p", "--no_keep_dcm_name_as_folder"])
+    assert result.exit_code == 0, result.output
+    assert _output_files(out) == ["a/b/U-0_0.png", "a/b/U-1_0.png", "a/b/metadata.json"]
+
+
+def test_preserve_folder_structure_single_file(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src / "a" / "b" / "dummy.dcm"), "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    assert _output_files(out) == ["dummy/U-0_0.png", "dummy/metadata.json"]
+
+
+def test_relative_source_file(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src), "-o", str(out), "-k", "pndg", "--relative_source_file"])
+    assert result.exit_code == 0, result.output
+    assert _output_files(out) == [  # layout is still the flat default
+        "123456__340692_OU_U.DCM/U-0_0.png",
+        "123456__340692_OU_U.DCM/U-1_0.png",
+        "123456__340692_OU_U.DCM/metadata.json",
+    ]
+    assert _source_files(out) == ["a/b/dummy.dcm", "c/wrong_acqui_time.dcm"]
+
+
+def test_preserve_folder_structure_dicomdir(runner: CliRunner, tmp_path: Path) -> None:
+    """DICOMDIR instances mirror their referenced file IDs; symlinked fixtures keep their own names."""
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["tests", "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    files = _output_files(out)
+    assert len(files) == 51  # 49 OCT frames + 1 SLO IR + metadata, grouped under the OCT instance 0002
+    assert {f.rsplit("/", 1)[0] for f in files} == {"DICOM/0002"}
+    assert _source_files(out) == ["tests/DICOM/0002", "tests/DICOM/0003"]
+
+
+def test_source_file_defaults_to_cwd_relative(runner: CliRunner, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["tests/dummy_ex", "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    assert _source_files(out) == ["tests/dummy_ex/dummy.dcm", "tests/dummy_ex/wrong_acqui_time.dcm"]
+
+
+@pytest.mark.parametrize("other", ["-g", "-r"])
+def test_preserve_folder_structure_mutually_exclusive(runner: CliRunner, tmp_path: Path, other: str) -> None:
+    result = runner.invoke(app, ["tests/dummy_ex", "-o", str(tmp_path / "out"), "-p", other])
+    output = remove_ansi_codes(result.stdout) + remove_ansi_codes(result.stderr)
+    assert result.exit_code == 1
+    assert "x '--preserve_folder_structure': are mutually excluding options" in output
+    assert not (tmp_path / "out").exists()

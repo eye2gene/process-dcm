@@ -47,9 +47,18 @@ uvx process-dcm --help
 │                                        patient_id is anonymised, a 'study_2_patient.csv' file will be generated.          │
 │ --keep                -k      <str>    Keep the specified fields (p: patient_key, n: names, d: date_of_birth, D:          │
 │                                        year-only DOB, g: gender)                                                          │
+│ --preserve_folder_structure  -p        Mirror the input folder structure under the output directory instead of the flat   │
+│                                        '{patient}_{date}_{hash}_{eye}_{modality}.DCM' folders. Not compatible with        │
+│                                        --group or --reset.                                                                │
+│ --keep_dcm_name_as_folder / --no_keep_dcm_name_as_folder                                                                  │
+│                                        With --preserve_folder_structure, write each DICOM's images into a folder named    │
+│                                        after the file. Disable to write all acquisitions of an input folder into one      │
+│                                        output folder. [default: keep_dcm_name_as_folder]                                  │
+│ --relative_source_file                 Write metadata 'source_file' relative to INPUT_PATH instead of the current working │
+│                                        directory.                                                                         │
 │ --overwrite           -w               Overwrite existing images if found.                                                │
 │ --reset               -r               Reset the output directory if it exists.                                           │
-│ --quiet               -q               Silence verbosity.                                                                 │
+│ --quiet               -q               Silence verbosity.                                                                  │
 │ --version             -V               Prints app version.                                                                │
 │ --install-completion                   Install completion for the current shell.                                          │
 │ --show-completion                      Show completion for the current shell, to copy it or customize the installation.   │
@@ -57,14 +66,31 @@ uvx process-dcm --help
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Output layout:
+### Output layout
+
+By default every acquisition group (DICOMs sharing a `FrameOfReferenceUID`, or an acquisition time with `--group`)
+is written to one flat, self-describing folder under the output directory:
 
 ```txt
 exported_data/
-└── {PatientKey}_{DateTime}_{Laterality}_{Modality}.DCM/
+└── {PatientKey}_{Date}_{Time}_{Hash}_{Laterality}_{Modality}.DCM/
     ├── {Modality}-{GroupID}_{FrameIndex}.{png|jpg|webp}
     └── metadata.json
 ```
+
+`--preserve_folder_structure` (`-p`) mirrors the input tree instead. The group is written under the relative folder of
+its first DICOM, in a leaf folder named after that file (drop the leaf with `--no_keep_dcm_name_as_folder`):
+
+```txt
+exported_data/
+└── {relative input folder}/{dicom file stem}/
+    ├── {Modality}-{GroupID}_{FrameIndex}.{png|jpg|webp}
+    └── metadata.json
+```
+
+This layout cannot be combined with `--group` or `--reset`. In both layouts each image entry in `metadata.json` records
+its `source_file` relative to the current working directory; `--relative_source_file` makes it relative to `INPUT_PATH`
+instead. The metadata format is versioned by `parser_version` (currently 1.6.0).
 
 ## Project structure
 

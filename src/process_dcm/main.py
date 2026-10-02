@@ -57,6 +57,24 @@ def main(
         "--keep",
         help="Keep the specified fields (p: patient_key, n: names, d: date_of_birth, D: year-only DOB, g: gender)",
     ),
+    preserve_folder_structure: bool = typer.Option(
+        False,
+        "-p",
+        "--preserve_folder_structure",
+        help="Mirror the input folder structure under the output directory instead of the flat "
+        "'{patient}_{date}_{hash}_{eye}_{modality}.DCM' folders. Not compatible with --group or --reset.",
+    ),
+    keep_dcm_name_as_folder: bool = typer.Option(
+        True,
+        "--keep_dcm_name_as_folder/--no_keep_dcm_name_as_folder",
+        help="With --preserve_folder_structure, write each DICOM's images into a folder named after the file. "
+        "Disable to write all acquisitions of an input folder into one output folder.",
+    ),
+    relative_source_file: bool = typer.Option(
+        False,
+        "--relative_source_file",
+        help="Write metadata 'source_file' relative to INPUT_PATH instead of the current working directory.",
+    ),
     overwrite: bool = typer.Option(False, "-w", "--overwrite", help="Overwrite existing images if found."),
     reset: bool = typer.Option(False, "-r", "--reset", help="Reset the output directory if it exists."),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Silence verbosity."),
@@ -90,6 +108,19 @@ def main(
         typer.secho("'--tol' option can only be used when '--group' is set.", fg="red")
         raise typer.Abort()
 
+    if preserve_folder_structure and group:
+        typer.secho(
+            "'--group' x '--preserve_folder_structure': are mutually excluding options", fg=typer.colors.BRIGHT_YELLOW
+        )
+        raise typer.Abort()
+    if preserve_folder_structure and reset:
+        typer.secho(
+            "'--reset' x '--preserve_folder_structure': are mutually excluding options (--reset only knows the flat "
+            "*.DCM layout)",
+            fg=typer.colors.BRIGHT_YELLOW,
+        )
+        raise typer.Abort()
+
     if reset:
         for dcm_folder in output_dir.glob("**/*.DCM"):
             if dcm_folder.is_dir():
@@ -108,6 +139,9 @@ def main(
         time_group=group,
         tol=tol,
         n_jobs=n_jobs,
+        preserve_folder_structure=preserve_folder_structure,
+        keep_dcm_name_as_folder=keep_dcm_name_as_folder,
+        relative_source_file=relative_source_file,
     )
 
     total = processed + skipped
