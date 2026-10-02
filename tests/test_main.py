@@ -24,6 +24,9 @@ def test_main_defaults(runner: CliRunner) -> None:
     assert "Input path 'input_path' does not exist\nAborted.\n" in output
 
 
+# Manual debugging hook, not a test: point the path at a local DICOM export, remove the skip marker temporarily, and
+# run it alone under the IDE debugger (or `uv run pytest tests/test_main.py::test_main_debug -n0 --no-cov`).
+# It stays skipped in the suite because the path exists only on the developer's machine.
 @pytest.mark.skip(reason="for debug")
 def test_main_debug(runner: CliRunner) -> None:
     result = runner.invoke(app, ["/Users/alan/Downloads/CE/Alan_Dicom_Exported", "-q", "-k", "pndg"])

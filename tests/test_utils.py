@@ -243,8 +243,8 @@ def test_process_and_save_csv_no_changes(csv_data: list[list[str]]) -> None:
         # Create reserved CSV with initial csv_data
         write_to_csv(reserved_csv, csv_data, header=["study_id", "patient_id"])
 
-        # Process and save the same CSV data
-        process_and_save_csv(csv_data, reserved_csv.name)
+        # Process and save the same CSV data (full path: `.name` alone would write into the working directory)
+        process_and_save_csv(csv_data, reserved_csv)
 
         # Check if reserved CSV remains unchanged
         unchanged_data = read_csv(reserved_csv)
