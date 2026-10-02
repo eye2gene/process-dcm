@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from process_dcm.utils import (
     do_date,
     get_md5,
     get_versioned_filename,
+    group_dcms_by_acquisition_time,
     meta_images,
     process_and_save_csv,
     process_dcm,
@@ -204,6 +206,131 @@ def test_update_modality_op_various_descriptions(
     dicom_base.SeriesDescription = description
     assert update_modality(dicom_base) is True
     assert dicom_base.pdcm_modality is expected_modality
+
+
+@pytest.mark.parametrize(
+    "manufacturer, model, description, expected_modality",
+    [
+        ("TOPCON", "", "Colour", ImageModality.COLOUR_PHOTO),
+        ("TOPCON", "", "Fundus IR", ImageModality.INFRARED_PHOTO),
+        ("Topcon Healthcare", "Triton", "Colour", ImageModality.COLOUR_PHOTO),  # Triton identified by model name
+    ],
+)
+def test_update_modality_topcon(
+    dicom_base: FileDataset, manufacturer: str, model: str, description: str, expected_modality: ImageModality
+) -> None:
+    """Topcon colour and infrared photos, including Triton devices that do not say 'TOPCON' in Manufacturer."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = manufacturer
+    dicom_base.ManufacturerModelName = model
+    dicom_base.SeriesDescription = description
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is expected_modality
+
+
+@pytest.mark.parametrize(
+    "description, image_type, expected_modality",
+    [
+        ("OptomapPlus", ["ORIGINAL", "PRIMARY", "", "RED", "OPTOMAPPLUS ICG"], ImageModality.OPTOS_ICGA),
+        ("OptomapPlus", ["ORIGINAL", "PRIMARY", "", "RED", "OPTOMAPPLUS AF"], ImageModality.OPTOS_AF_IR),
+        ("OptomapPlus", ["ORIGINAL", "PRIMARY", "", "GREEN", "OPTOMAPPLUS AF"], ImageModality.UNKNOWN_ULTRAWIDEFIELD),
+        ("Angio", ["ORIGINAL", "PRIMARY", "", "FA"], ImageModality.OPTOS_FA),
+        ("Colour", ["ORIGINAL", "PRIMARY", "", "COLOR", "OPTOMAPPLUS RG"], ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD),
+        ("Something else", ["ORIGINAL", "PRIMARY"], ImageModality.UNKNOWN),
+    ],
+)
+def test_update_modality_optos_image_type(
+    dicom_base: FileDataset, description: str, image_type: list[str], expected_modality: ImageModality
+) -> None:
+    """Optos images classified from ImageType values."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "OPTOS"
+    dicom_base.SeriesDescription = description
+    dicom_base.ImageType = image_type
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is expected_modality
+
+
+@pytest.mark.parametrize(
+    "image_type, expected_modality",
+    [
+        (["ORIGINAL", "PRIMARY", "COLOR"], ImageModality.COLOUR_PHOTO),
+        (["ORIGINAL", "PRIMARY", "FAFGREEN"], ImageModality.AUTOFLUORESCENCE_GREEN),
+        (["ORIGINAL", "PRIMARY", "FAFBLUE"], ImageModality.AUTOFLUORESCENCE_BLUE),
+        (["ORIGINAL", "PRIMARY", "FA"], ImageModality.FLUORESCEIN_ANGIOGRAPHY),
+        (["ORIGINAL", "PRIMARY", "IR"], ImageModality.SLO_INFRARED),
+        (["ORIGINAL", "PRIMARY", "FAG"], ImageModality.FLUORESCEIN_ANGIOGRAPHY),  # via the generic hint lookup
+        (["ORIGINAL", "PRIMARY"], ImageModality.UNKNOWN),
+    ],
+)
+def test_update_modality_zeiss(
+    dicom_base: FileDataset, image_type: list[str], expected_modality: ImageModality
+) -> None:
+    """Zeiss images classified from ImageType values; unknown ones stay unknown (no default to FA)."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "Carl Zeiss Meditec AG"
+    dicom_base.ImageType = image_type
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is expected_modality
+
+
+def test_update_modality_exact_ir_description(dicom_base: FileDataset) -> None:
+    """A SeriesDescription of exactly 'IR' is an infrared SLO image."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "Heidelberg Engineering"
+    dicom_base.SeriesDescription = "IR"
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.SLO_INFRARED
+
+
+def test_update_modality_hint_in_series_description(dicom_base: FileDataset) -> None:
+    """An otherwise unknown OP image is classified by a modality code spelled out in SeriesDescription."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "NIDEK"
+    dicom_base.SeriesDescription = "Fundus MP_IR 30deg"
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.MP_IR
+
+
+def test_update_modality_other_modality_with_hint(dicom_base: FileDataset) -> None:
+    """Non-OP/OPT objects are accepted when ImageType names a modality code (e.g. converted microperimetry)."""
+    dicom_base.Modality = "SC"
+    dicom_base.ImageType = ["DERIVED", "SECONDARY", "MP_IR"]
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.MP_IR
+
+
+def test_update_modality_skips_oct_angiography_report(dicom_base: FileDataset) -> None:
+    """OCT angiography report renderings are not B-scans and are skipped rather than exported as OCT."""
+    dicom_base.Modality = "OPT"
+    dicom_base.SeriesDescription = "Angiography Report Analysis"
+    assert update_modality(dicom_base) is False
+
+
+def test_update_modality_without_manufacturer(dicom_base: FileDataset) -> None:
+    """A missing Manufacturer element no longer raises; classification falls back to SeriesDescription."""
+    del dicom_base.Manufacturer
+    dicom_base.Modality = "OP"
+    dicom_base.SeriesDescription = "Volume IR"
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.SLO_INFRARED
+
+
+@pytest.mark.parametrize("date_str", ["20260312123456.789+0000", "20260312123456+0100", "20260312123456.789-0500"])
+def test_do_date_strips_utc_offset(date_str: str) -> None:
+    """DICOM DT values with a UTC offset are parsed as their naive local time."""
+    assert do_date(date_str, "%Y%m%d%H%M%S.%f", "%Y-%m-%d %H:%M:%S") == "2026-03-12 12:34:56"
+
+
+def test_group_by_acquisition_time_with_utc_offset(dicom_base: FileDataset) -> None:
+    """Acquisition times carrying a UTC offset are grouped like plain ones."""
+    first = copy.deepcopy(dicom_base)
+    second = copy.deepcopy(dicom_base)
+    first.AcquisitionDateTime = "20260312123456.000+0000"
+    second.AcquisitionDateTime = "20260312123457.500+0000"
+    groups = group_dcms_by_acquisition_time([first, second], tol=2)
+    assert len(groups) == 1
+    assert len(next(iter(groups.values()))) == 2
 
 
 def test_process_dcm_meta_with_D_in_keep_and_mapping(dicom_base: FileDataset) -> None:

@@ -256,9 +256,10 @@ def test_main_optos_fa(janitor: list[str], runner: CliRunner) -> None:
         assert result.exit_code == 0
         of = sorted(glob(f"{output_dir}/**/*"))
         assert len(of) == 2
+        # the folder now carries the acquisition date: this Optos file stores it with a UTC offset (-0400)
         assert (
-            get_md5(output_dir / "1840002001__44fd1d_OD_OPTOS_FA.DCM" / "metadata.json", bottom)
-            == "20f995e0f67c8e53b29b93b619881326"
+            get_md5(output_dir / "1840002001_20231013_112320_44fd1d_OD_OPTOS_FA.DCM" / "metadata.json", bottom)
+            == "f7d628532ddc8b4e3ff35d0a716fd9b1"
         )
 
 
@@ -282,13 +283,14 @@ def test_optomap(runner: CliRunner) -> None:
         args = ["tests/rg_optomap/example.dcm", "-k", "pndg", "-o", tmpdirname]
         result = runner.invoke(app, args)
         assert result.exit_code == 0
-        md5 = get_md5(output_dir / "252-1052__4eb9d4_OS_PCUWF.DCM/PCUWF-0_0.png")
+        # the folder now carries the acquisition date: this Optos file stores it with a UTC offset (-0500)
+        md5 = get_md5(output_dir / "252-1052_20250102_100023_4eb9d4_OS_PCUWF.DCM/PCUWF-0_0.png")
         assert md5 in [
             "8ef9cf6a4eb98b80129c398368cf1925",  # Pillow < 12
             "6124405b60c88310f072fb31b207805d",  # Pillow < 12
             "c3fa82e02662f5bd24e18768c0440204",  # Pillow >= 12
         ]
         assert (
-            get_md5(output_dir / "252-1052__4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
-            == "469d14d0e9094cc0523be2405d813e64"
+            get_md5(output_dir / "252-1052_20250102_100023_4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
+            == "3d7ac9c2b41a55e720fad699e7958f01"
         )

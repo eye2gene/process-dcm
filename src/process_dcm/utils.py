@@ -6,6 +6,7 @@ import filecmp
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from collections import defaultdict
@@ -42,8 +43,17 @@ def _check_metadata_exists(output_dir: Path) -> bool:
     return meta_path.exists()
 
 
+_UTC_OFFSET = re.compile(r"[+-]\d{4}$")  # a DICOM DT value may end with a UTC offset, e.g. 20260312123456.789+0000
+
+
+def strip_utc_offset(date_str: str) -> str:
+    """Remove a trailing DICOM UTC offset (``+HHMM`` / ``-HHMM``) so the value matches the naive strptime formats."""
+    return _UTC_OFFSET.sub("", date_str)
+
+
 def do_date(date_str: str, input_format: str, output_format: str) -> str:
     """Convert DCM datetime strings to metadata.json string format."""
+    date_str = strip_utc_offset(date_str)
     if "." not in date_str:
         input_format = input_format.split(".")[0]
     try:
@@ -251,59 +261,125 @@ process_dcm_meta.__doc__ = (
 )
 
 
+# OPT objects that are rendered reports rather than B-scan acquisitions; they are skipped, not exported as OCT
+_OPT_REPORT_DESCRIPTIONS = frozenset({"Angiography Report Analysis"})
+
+
+def _modality_from_hints(series: str, image_type: list[str]) -> ImageModality | None:
+    """Last-resort lookup of a modality code spelled out in SeriesDescription (space-delimited) or in ImageType.
+
+    Args:
+        series: The SeriesDescription value, or an empty string.
+        image_type: The ImageType values as plain strings.
+
+    Returns:
+        The first matching modality in declaration order, or None when nothing matches.
+    """
+    for modality in ImageModality:
+        if modality is ImageModality.UNKNOWN:
+            continue
+        if f" {modality.code} " in series or modality.code in image_type:
+            return modality
+    if "FAG" in image_type:  # German "Fluoreszenzangiographie" (Zeiss)
+        return ImageModality.FLUORESCEIN_ANGIOGRAPHY
+    return None
+
+
+def _optos_modality(dcm: FileDataset, series: str, image_type: list[str]) -> ImageModality:
+    """Classify an Optos OP image from SeriesDescription, ImageType, contrast agent and field of view."""
+    series_upper = series.upper()
+    has_fluorescein = any("Fluorescein" in str(item) for item in dcm.get("ContrastBolusAgentSequence", []))
+    if ("FA " in series and has_fluorescein) or "FA" in image_type:
+        return ImageModality.OPTOS_FA
+    if "RG OPTOMAP" in series_upper or "OPTOMAPPLUS RG" in image_type:
+        return ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD
+    if "OPTOMAPPLUS ICG" in image_type:
+        return ImageModality.OPTOS_ICGA
+    if "OPTOMAPPLUS AF" in image_type:
+        return ImageModality.OPTOS_AF_IR if "RED" in image_type else ImageModality.UNKNOWN_ULTRAWIDEFIELD
+    if dcm.get("HorizontalFieldOfView", 0) == 200:
+        return ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD  # no cov AWSS
+    if "OPTOMAP" in series_upper:
+        return ImageModality.UNKNOWN_ULTRAWIDEFIELD
+    return ImageModality.UNKNOWN
+
+
+def _zeiss_modality(image_type: list[str]) -> ImageModality:
+    """Classify a Zeiss OP image from its ImageType values."""
+    if "COLOR" in image_type:
+        return ImageModality.COLOUR_PHOTO
+    if "FAFGREEN" in image_type:
+        return ImageModality.AUTOFLUORESCENCE_GREEN
+    if "FAFBLUE" in image_type:
+        return ImageModality.AUTOFLUORESCENCE_BLUE
+    if "FA" in image_type:
+        return ImageModality.FLUORESCEIN_ANGIOGRAPHY
+    if "IR" in image_type:
+        return ImageModality.SLO_INFRARED
+    return ImageModality.UNKNOWN
+
+
 def update_modality(dcm: FileDataset) -> bool:
-    """Resolves the image modality of a DICOM object from its Modality, Manufacturer and SeriesDescription.
+    """Resolves the image modality of a DICOM object from Modality, Manufacturer, SeriesDescription and ImageType.
 
     The result is stored in the plain attribute ``dcm.pdcm_modality`` (an :class:`ImageModality`); the DICOM
-    ``Modality`` element itself is left untouched.
+    ``Modality`` element itself is left untouched. OP/OPT images that cannot be classified resolve to
+    :attr:`ImageModality.UNKNOWN` and are still exported; other modalities are accepted only when a modality code
+    is spelled out in SeriesDescription or ImageType.
 
     Args:
         dcm (pydicom.dataset.FileDataset): The DICOM object to update.
 
     Returns:
-        bool: True if modality is resolved; False if the modality is unsupported.
+        bool: True if modality is resolved; False if the object is unsupported and must be skipped.
     """
-    if dcm.get("Modality") is None:
+    modality = dcm.get("Modality")
+    if modality is None:
         return False  # No modality, continue # no cov
-    elif dcm.Modality == "OPT":
-        dcm.pdcm_modality = ImageModality.OCT
-    elif dcm.Modality == "OP":
-        if dcm.Manufacturer.upper() == "TOPCON":
-            dcm.pdcm_modality = ImageModality.COLOUR_PHOTO
-        elif dcm.Manufacturer.upper() == "OPTOS":
-            if dcm.get("HorizontalFieldOfView", 0) == 200:
-                dcm.pdcm_modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD  # no cov AWSS
-            elif "FA " in dcm.get("SeriesDescription", "") and any(
-                "Fluorescein" in str(item) for item in dcm.get("ContrastBolusAgentSequence", [])
-            ):
-                dcm.pdcm_modality = ImageModality.OPTOS_FA
-            elif "RG OPTOMAP" in dcm.get("SeriesDescription", "").upper():
-                dcm.pdcm_modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD
-            elif "OPTOMAP" in dcm.get("SeriesDescription", "").upper():
-                dcm.pdcm_modality = ImageModality.UNKNOWN_ULTRAWIDEFIELD
-            else:
-                dcm.pdcm_modality = ImageModality.UNKNOWN
-        elif " IR" in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.SLO_INFRARED
-        elif " BAF " in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.AUTOFLUORESCENCE_BLUE
-        elif " ICGA " in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.INDOCYANINE_GREEN_ANGIOGRAPHY
-        elif " FA&ICGA " in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.FA_ICGA
-        elif " FA " in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.FLUORESCEIN_ANGIOGRAPHY
-        elif " RF " in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.RED_FREE
-        elif " BR " in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.REFLECTANCE_BLUE
-        elif " MColor " in dcm.get("SeriesDescription", ""):
-            dcm.pdcm_modality = ImageModality.REFLECTANCE_MCOLOR
-        else:
-            dcm.pdcm_modality = ImageModality.UNKNOWN
-    else:
-        return False  # Unsupported modality, continue
 
+    series = str(dcm.get("SeriesDescription", ""))
+    image_type = [str(value) for value in dcm.get("ImageType", [])]
+    manufacturer = str(dcm.get("Manufacturer", "")).upper()
+    model = str(dcm.get("ManufacturerModelName", "")).upper()
+
+    resolved = ImageModality.UNKNOWN
+    if modality == "OPT":
+        if series in _OPT_REPORT_DESCRIPTIONS:
+            return False  # rendered report, not a scan
+        resolved = ImageModality.OCT
+    elif modality == "OP":
+        if manufacturer == "TOPCON" or model == "TRITON":
+            resolved = ImageModality.INFRARED_PHOTO if " IR" in series else ImageModality.COLOUR_PHOTO
+        elif manufacturer == "OPTOS":
+            resolved = _optos_modality(dcm, series, image_type)
+        elif "ZEISS" in manufacturer:
+            resolved = _zeiss_modality(image_type)
+        elif " IR" in series or series == "IR":
+            resolved = ImageModality.SLO_INFRARED
+        elif " BAF " in series:
+            resolved = ImageModality.AUTOFLUORESCENCE_BLUE
+        elif " ICGA " in series:
+            resolved = ImageModality.INDOCYANINE_GREEN_ANGIOGRAPHY
+        elif " FA&ICGA " in series:
+            resolved = ImageModality.FA_ICGA
+        elif " FA " in series:
+            resolved = ImageModality.FLUORESCEIN_ANGIOGRAPHY
+        elif " RF " in series:
+            resolved = ImageModality.RED_FREE
+        elif " BR " in series:
+            resolved = ImageModality.REFLECTANCE_BLUE
+        elif " MColor " in series:
+            resolved = ImageModality.REFLECTANCE_MCOLOR
+    else:
+        # e.g. secondary-capture or converted objects: accepted only when the hints name a modality
+        hinted = _modality_from_hints(series, image_type)
+        if hinted is None:
+            return False  # Unsupported modality, continue
+        resolved = hinted
+
+    if resolved is ImageModality.UNKNOWN:
+        resolved = _modality_from_hints(series, image_type) or ImageModality.UNKNOWN
+    dcm.pdcm_modality = resolved
     return True  # Modality resolved successfully
 
 
@@ -320,6 +396,7 @@ def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> d
     grouped_dcms: dict[str, list[FileDataset]] = defaultdict(list)
 
     def parse_datetime(dt_str: str) -> datetime:
+        dt_str = strip_utc_offset(dt_str)
         try:
             return datetime.strptime(dt_str, "%Y%m%d%H%M%S.%f")
         except ValueError:
