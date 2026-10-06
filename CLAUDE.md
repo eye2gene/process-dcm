@@ -74,6 +74,9 @@ This repo follows the Eye2Gene [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg
 - `just` recipes are the single interface for dev commands; CI runs the same recipes.
 - Minimum Python 3.11 (ruff targets it). Develop with 3.12 (`.python-version`). Move both to 3.12 once every
   Eye2Gene consumer of process-dcm is on 3.12.
+- process-dcm keeps its own per-dataset state in plain `pdcm_*` attributes on pydicom datasets (`pdcm_modality`,
+  `pdcm_group`, `pdcm_source`; see the comment at the top of `utils.py`). Never store it in real DICOM elements:
+  pydicom 3 warns on every non-conformant value and the file's own values get clobbered.
 
 ## Commands
 
@@ -87,14 +90,30 @@ just build                   # uv build -> dist/
 uv run process-dcm INPUT -o OUT -f png --overwrite   # run the CLI
 ```
 
+## Output contract
+
+- Default layout: one flat folder per acquisition group, `{patient}_{date}_{time}[_{hash}]_{eye}_{modality}.DCM`,
+  with `source_file` in the metadata relative to the current working directory. Downstream tools rely on this.
+  `--preserve_folder_structure`, `--keep_dcm_name_as_folder` and `--relative_source_file` are opt-in alternatives
+  added for a downstream tool (PR #6); never flip their defaults.
+- Unknown OP/OPT images are exported under the `U` modality; only unsupported objects (other modalities without a
+  recognisable modality code, OCT angiography report renderings) are skipped.
+- A group may mix eyes and acquisition times (issue #5). Each image entry carries its own `laterality` and
+  `scan_datetime`; the series-level `laterality` is `B` and the folder eye is `OU` when the group mixes eyes, and the
+  exam-level `scan_datetime` is the earliest in the group.
+- `metadata.json` carries `parser_version` for the JSON format and `py_dcm_version` for the package version. Bump
+  `parser_version` whenever the metadata schema changes. History: 1.5.3 added `source_file`; 1.6.0 added
+  `sop_instance_uid` / `sop_class_uid` per image and `photo_locations` entries with a `start` point only for circular
+  B-scans; 1.7.0 (current) added `laterality` / `scan_datetime` per image.
+
 ## Testing notes
 
 - `tests/example_dir` (~625 MB of sample DICOMs) is deliberately not in git. Tests that need it skip when it is absent.
-- Many tests assert MD5 hashes of generated PNGs and of `metadata.json` (minus its last lines). PNG bytes depend on the
-  Pillow version even when pixels are identical, so hash lists accept several values. When a dependency bump changes a
-  hash, verify pixels are unchanged before appending the new hash.
-- `metadata.json` carries `parser_version` ([1, 5, 3]) for the JSON format and `py_dcm_version` for the package
-  version. Bump `parser_version` whenever the metadata schema changes.
+- Many tests assert MD5 hashes of generated PNGs and of `metadata.json` (minus its last lines, which hold the version
+  numbers). PNG bytes depend on the Pillow version and on the platform (macOS vs Linux wheels) even when pixels are
+  identical, so PNG hash lists accept several values. When a dependency bump changes a hash, verify pixels are unchanged
+  before appending the new hash. Metadata hashes have a single value: input files are processed in sorted order.
+- `tests/DICOM/0001-0003` are symlinks to `tests/example-dcms`; the mirrored output layout must not resolve symlinks.
 
 ## Releases
 
