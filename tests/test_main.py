@@ -1,3 +1,4 @@
+import json
 import shutil
 from glob import glob
 from pathlib import Path
@@ -12,6 +13,10 @@ from process_dcm.main import app
 from process_dcm.utils import get_md5
 from tests.conftest import bottom, remove_ansi_codes
 
+# ~625 MB of sample DICOMs deliberately kept out of git (see README "Test data")
+EXAMPLE_DIR = Path("tests/example_dir")
+requires_example_dir = pytest.mark.skipif(not EXAMPLE_DIR.is_dir(), reason="tests/example_dir is not available")
+
 
 def test_main_defaults(runner: CliRunner) -> None:
     result = runner.invoke(app, ["input_path"])
@@ -20,6 +25,9 @@ def test_main_defaults(runner: CliRunner) -> None:
     assert "Input path 'input_path' does not exist\nAborted.\n" in output
 
 
+# Manual debugging hook, not a test: point the path at a local DICOM export, remove the skip marker temporarily, and
+# run it alone under the IDE debugger (or `uv run pytest tests/test_main.py::test_main_debug -n0 --no-cov`).
+# It stays skipped in the suite because the path exists only on the developer's machine.
 @pytest.mark.skip(reason="for debug")
 def test_main_debug(runner: CliRunner) -> None:
     result = runner.invoke(app, ["/Users/alan/Downloads/CE/Alan_Dicom_Exported", "-q", "-k", "pndg"])
@@ -63,31 +71,39 @@ def test_main_with_options(
     assert expected_output in result.output
 
 
+# PNG bytes depend on the Pillow encoder version even though pixels are identical
+PNG_MD5S = [
+    "5ba37cc43233db423394cf98c81d5fbc",  # GH, Pillow < 12
+    "a726b59587ca4ea1a478802e3ee9235c",  # local, Pillow < 12
+    "19a3a9b1922447053ca0bce8ba785767",  # Pillow >= 12
+]
+
+
 def test_cli_without_args(runner: CliRunner) -> None:
     result = runner.invoke(app)
     assert result.exit_code == 2
     output = remove_ansi_codes(result.stderr)
-    assert "Missing argument 'INPUT_PATH'" in output
+    assert "Missing argument" in output  # metavar rendering differs across typer versions
 
 
 @pytest.mark.parametrize(
     "md5, meta, keep, key",
     [
         (
-            ["5ba37cc43233db423394cf98c81d5fbc", "a726b59587ca4ea1a478802e3ee9235c"],
-            "e762d18b90b39e55cd53094288157eb8",
+            PNG_MD5S,
+            "38694e562dd4e6245abc311cb2f52f72",
             "pndg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
-            ["5ba37cc43233db423394cf98c81d5fbc", "a726b59587ca4ea1a478802e3ee9235c"],
-            "6d7a42b68af0191f8710cea06ba6c521",
+            PNG_MD5S,
+            "c80b516a3599868aaf77a147fdc78d46",
             "pnDg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
-            ["5ba37cc43233db423394cf98c81d5fbc", "a726b59587ca4ea1a478802e3ee9235c"],
-            "f706061cebaba9c14ae96dd595cd7b00",
+            PNG_MD5S,
+            "ee3313f5c2d5d509cb7f61023484fcf7",
             "",
             "0780320450",
         ),
@@ -138,12 +154,9 @@ def test_main_group(janitor: list[str], runner: CliRunner) -> None:
         assert len(tof) == 52
         assert (
             get_md5(output_dir / "0780320450_20150624_144600_OD_OCT.DCM" / "metadata.json", bottom)
-            == "ba6648bf45d86752bd20dc72c4ec5b47"
+            == "119d0b558164f6baa70b67831747fddc"
         )
-        assert get_md5(of) in [
-            "a726b59587ca4ea1a478802e3ee9235c",  # local
-            "5ba37cc43233db423394cf98c81d5fbc",  # GH
-        ]
+        assert get_md5(of) in PNG_MD5S
         result = runner.invoke(app, args)
         assert result.exit_code == 0
         assert "0780320450_20150624_144600_OD_OCT.DCM' already exists with metadata" in result.output
@@ -157,13 +170,16 @@ def test_main_dummy(janitor: list[str], runner: CliRunner) -> None:
     tof = sorted(glob("dummy_dir/**/*"))
     of = [x for x in tof if "metadata.json" not in x]
     assert len(tof) == 3
-    assert get_md5(Path("dummy_dir") / "123456__340692_OU_U.DCM" / "metadata.json", bottom) in [
-        "dfe455bef4335776973b8e0e88e32d18",  # local
-        "3432e7670635837b2631658ef78f7192",  # GH
-    ]
+    # one value only: input files are processed in sorted order, so the image order no longer depends on the filesystem
+    assert (
+        get_md5(Path("dummy_dir") / "123456__340692_OU_U.DCM" / "metadata.json", bottom)
+        == "5129bbc8641ce674f37339bf2501e768"
+    )
     assert get_md5(of) in [
-        "fb7c7e0fe4e7d3e89e0daae479d013c4",  # local
-        "77bb205173d3b15f6131b530a29c2ab7",  # GH
+        "fb7c7e0fe4e7d3e89e0daae479d013c4",  # macOS, Pillow < 12
+        "77bb205173d3b15f6131b530a29c2ab7",  # Linux (GH), Pillow < 12
+        "8e1531010084c8681f3e21d27206f086",  # macOS, Pillow >= 12
+        "30b70623445f7c12d8ad773c9738c7ce",  # Linux (GH), Pillow >= 12
     ]
 
 
@@ -202,7 +218,7 @@ def test_main_no_dicom(runner: CliRunner, tmp_path: Path) -> None:
     assert output == f"\nNo DICOM files found in {tmp_path}\n"
 
 
-# skip this test for CI
+@requires_example_dir
 def test_main_mapping_example_dir(janitor: list[str], runner: CliRunner) -> None:
     janitor.append("study_2_patient.csv")
     janitor.append("study_2_patient_1.csv")
@@ -216,11 +232,11 @@ def test_main_mapping_example_dir(janitor: list[str], runner: CliRunner) -> None
         assert len(of) == 264
         assert (
             get_md5(output_dir / "2910892726_20180724_161901_477b53_OS_OCT.DCM" / "metadata.json", bottom)
-            == "f40efe6f3400bd1bc2345eb472743a61"
+            == "fb44929b50c8b8ed9732c8460476b47c"
         )
         assert (
             get_md5(output_dir / "3517807670_20180926_140517_600177_OD_OCT.DCM" / "metadata.json", bottom)
-            == "a040bd108eb762450f205a43ff3d80ec"
+            == "726ba92fe21bfc28f2d0bfd508b8421f"
         )
         args = ["tests/example_dir", "-o", str(output_dir), "-j", "2", "-k", "nDg", "-m", "tests/map.csv"]
         # result = runner.invoke(app, args)
@@ -242,9 +258,10 @@ def test_main_optos_fa(janitor: list[str], runner: CliRunner) -> None:
         assert result.exit_code == 0
         of = sorted(glob(f"{output_dir}/**/*"))
         assert len(of) == 2
+        # the folder now carries the acquisition date: this Optos file stores it with a UTC offset (-0400)
         assert (
-            get_md5(output_dir / "1840002001__44fd1d_OD_OPTOS_FA.DCM" / "metadata.json", bottom)
-            == "fc9e00e17aab58355d949ea205f9f6a6"
+            get_md5(output_dir / "1840002001_20231013_112320_44fd1d_OD_OPTOS_FA.DCM" / "metadata.json", bottom)
+            == "6db8437dfffe52f811389b88292136c4"
         )
 
 
@@ -268,9 +285,99 @@ def test_optomap(runner: CliRunner) -> None:
         args = ["tests/rg_optomap/example.dcm", "-k", "pndg", "-o", tmpdirname]
         result = runner.invoke(app, args)
         assert result.exit_code == 0
-        md5 = get_md5(output_dir / "252-1052__4eb9d4_OS_PCUWF.DCM/PCUWF-0_0.png")
-        assert md5 in ["8ef9cf6a4eb98b80129c398368cf1925", "6124405b60c88310f072fb31b207805d"]
+        # the folder now carries the acquisition date: this Optos file stores it with a UTC offset (-0500)
+        md5 = get_md5(output_dir / "252-1052_20250102_100023_4eb9d4_OS_PCUWF.DCM/PCUWF-0_0.png")
+        assert md5 in [
+            "8ef9cf6a4eb98b80129c398368cf1925",  # Pillow < 12
+            "6124405b60c88310f072fb31b207805d",  # Pillow < 12
+            "c3fa82e02662f5bd24e18768c0440204",  # Pillow >= 12
+        ]
         assert (
-            get_md5(output_dir / "252-1052__4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
-            == "3a4e60a2201c9666cbe9700c2c3438de"
+            get_md5(output_dir / "252-1052_20250102_100023_4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
+            == "67d172019b2a669a733ce3868691c64f"
         )
+
+
+# --- opt-in output layout: --preserve_folder_structure / --keep_dcm_name_as_folder / --relative_source_file ------
+
+
+def _nested_dummy_tree(root: Path) -> Path:
+    """Copy the two dummy DICOMs (same FrameOfReferenceUID, so one group) into a small nested input tree."""
+    src = root / "in"
+    (src / "a" / "b").mkdir(parents=True)
+    (src / "c").mkdir()
+    shutil.copy("tests/dummy_ex/dummy.dcm", src / "a" / "b" / "dummy.dcm")
+    shutil.copy("tests/dummy_ex/wrong_acqui_time.dcm", src / "c" / "wrong_acqui_time.dcm")
+    return src
+
+
+def _output_files(out: Path) -> list[str]:
+    return sorted(p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file())
+
+
+def _source_files(out: Path) -> list[str]:
+    files: list[str] = []
+    for meta in sorted(out.rglob("metadata.json")):
+        files.extend(image["source_file"] for image in json.loads(meta.read_text())["images"]["images"])
+    return files
+
+
+def test_preserve_folder_structure_mirrors_input_tree(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src), "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    # the whole group lands under the first file's folder, named after that file
+    assert _output_files(out) == ["a/b/dummy/U-0_0.png", "a/b/dummy/U-1_0.png", "a/b/dummy/metadata.json"]
+
+
+def test_preserve_folder_structure_without_dcm_name_folder(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src), "-o", str(out), "-k", "pndg", "-p", "--no_keep_dcm_name_as_folder"])
+    assert result.exit_code == 0, result.output
+    assert _output_files(out) == ["a/b/U-0_0.png", "a/b/U-1_0.png", "a/b/metadata.json"]
+
+
+def test_preserve_folder_structure_single_file(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src / "a" / "b" / "dummy.dcm"), "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    assert _output_files(out) == ["dummy/U-0_0.png", "dummy/metadata.json"]
+
+
+def test_relative_source_file(runner: CliRunner, tmp_path: Path) -> None:
+    src, out = _nested_dummy_tree(tmp_path), tmp_path / "out"
+    result = runner.invoke(app, [str(src), "-o", str(out), "-k", "pndg", "--relative_source_file"])
+    assert result.exit_code == 0, result.output
+    assert _output_files(out) == [  # layout is still the flat default
+        "123456__340692_OU_U.DCM/U-0_0.png",
+        "123456__340692_OU_U.DCM/U-1_0.png",
+        "123456__340692_OU_U.DCM/metadata.json",
+    ]
+    assert _source_files(out) == ["a/b/dummy.dcm", "c/wrong_acqui_time.dcm"]
+
+
+def test_preserve_folder_structure_dicomdir(runner: CliRunner, tmp_path: Path) -> None:
+    """DICOMDIR instances mirror their referenced file IDs; symlinked fixtures keep their own names."""
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["tests", "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    files = _output_files(out)
+    assert len(files) == 51  # 49 OCT frames + 1 SLO IR + metadata, grouped under the OCT instance 0002
+    assert {f.rsplit("/", 1)[0] for f in files} == {"DICOM/0002"}
+    assert _source_files(out) == ["tests/DICOM/0002", "tests/DICOM/0003"]
+
+
+def test_source_file_defaults_to_cwd_relative(runner: CliRunner, tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    result = runner.invoke(app, ["tests/dummy_ex", "-o", str(out), "-k", "pndg", "-p"])
+    assert result.exit_code == 0, result.output
+    assert _source_files(out) == ["tests/dummy_ex/dummy.dcm", "tests/dummy_ex/wrong_acqui_time.dcm"]
+
+
+@pytest.mark.parametrize("other", ["-g", "-r"])
+def test_preserve_folder_structure_mutually_exclusive(runner: CliRunner, tmp_path: Path, other: str) -> None:
+    result = runner.invoke(app, ["tests/dummy_ex", "-o", str(tmp_path / "out"), "-p", other])
+    output = remove_ansi_codes(result.stdout) + remove_ansi_codes(result.stderr)
+    assert result.exit_code == 1
+    assert "x '--preserve_folder_structure': are mutually excluding options" in output
+    assert not (tmp_path / "out").exists()

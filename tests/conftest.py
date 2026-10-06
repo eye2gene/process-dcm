@@ -20,6 +20,25 @@ def pytest_report_header() -> str:
     return f">>>\tVersion: {version}\n"
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Dynamically add filterwarnings rules for pytest when suppression is desired.
+
+    Using addinivalue_line ensures pytest's own warnings plugin honours the filters
+    across the entire test session, without modifying each test file.
+    """
+    rules = [
+        # NOTE: we should know the warnings and address them
+        # Apply warning filters here instead of in pyproject.toml
+        # so IDEs (e.g., VS Code, PyCharm) pick them up correctly.
+        "error",  # it will make pytest FAIL if an unknown warn is raised
+        # pydicom.fileset.FileSet stages into a TemporaryDirectory it never cleans up explicitly (no close()),
+        # so its finalizer emits this when the FileSet is garbage-collected (DICOMDIR tests)
+        "ignore:Implicitly cleaning up <TemporaryDirectory:ResourceWarning",
+    ]
+    for rule in rules:
+        config.addinivalue_line("filterwarnings", rule)
+
+
 def remove_ansi_codes(text: str) -> str:
     ansi_escape = re.compile(r"\x1B[@-_][0-?]*[ -/]*[@-~]")
     return ansi_escape.sub("", text)
@@ -83,7 +102,11 @@ def input_dir() -> Path:
 
 @pytest.fixture(scope="module")
 def input_dir2() -> Path:
-    return Path("tests/example_dir/010-0001/20180724_L").resolve()
+    """Sample study inside tests/example_dir (~625 MB, not in git); skips dependent tests when absent."""
+    path = Path("tests/example_dir/010-0001/20180724_L").resolve()
+    if not path.is_dir():
+        pytest.skip("tests/example_dir is not available")
+    return path
 
 
 @pytest.fixture
@@ -109,7 +132,9 @@ def dicom_opotopol() -> FileDataset:
     dataset.Columns = 512
     dataset.Rows = 512
     dataset.NumberOfFrames = 5
-    dataset.AccessionNumber = 0
+    dataset.pdcm_group = (
+        0  # process-dcm's image group counter (set by process_dcm(); plain attribute, not a DICOM element)
+    )
 
     # Add the PerFrameFunctionalGroupsSequence with missing fields to simulate "empty photo_locations"
     functional_group = Dataset()
@@ -148,7 +173,9 @@ def dicom_attribute_error() -> FileDataset:
     dataset.Columns = 512
     dataset.Rows = 512
     dataset.NumberOfFrames = 5
-    dataset.AccessionNumber = 0
+    dataset.pdcm_group = (
+        0  # process-dcm's image group counter (set by process_dcm(); plain attribute, not a DICOM element)
+    )
 
     # Add the PerFrameFunctionalGroupsSequence
     functional_group = Dataset()
@@ -187,7 +214,9 @@ def dicom_with_photo_locations() -> FileDataset:
     dataset.Columns = 512
     dataset.Rows = 512
     dataset.NumberOfFrames = 5
-    dataset.AccessionNumber = 0
+    dataset.pdcm_group = (
+        0  # process-dcm's image group counter (set by process_dcm(); plain attribute, not a DICOM element)
+    )
 
     # Add the PerFrameFunctionalGroupsSequence with valid OphthalmicFrameLocationSequence
     frame_location = Dataset()
@@ -218,8 +247,9 @@ def dicom_base() -> FileDataset:
     )
 
     # Mock setting relevant fields to simulate a basic DICOM file
-    dataset.AccessionNumber = 0
-    dataset.Modality = ImageModality.OCT
+    dataset.Modality = "OPT"
+    dataset.pdcm_modality = ImageModality.OCT  # what update_modality() would resolve for it
+    dataset.pdcm_group = 0
     dataset.PatientBirthDate = "19020202"
     dataset.Manufacturer = ""
     dataset.SeriesDescription = ""

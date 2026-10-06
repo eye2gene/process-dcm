@@ -1,13 +1,14 @@
+import copy
 import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
 from unittest.mock import patch
 
 import pytest
 import typer
 from pydicom.dataset import FileDataset
+from pydicom.filereader import dcmread
 from pytest_mock import MockerFixture
 
 from process_dcm.const import ImageModality
@@ -16,7 +17,11 @@ from process_dcm.utils import (
     do_date,
     get_md5,
     get_versioned_filename,
+    group_dcms_by_acquisition_time,
+    group_laterality,
+    group_scan_datetime,
     meta_images,
+    output_folder_for,
     process_and_save_csv,
     process_dcm,
     process_dcm_meta,
@@ -62,6 +67,49 @@ def test_meta_images_with_photo_locations(dicom_with_photo_locations: FileDatase
     )
 
 
+def test_meta_images_sop_uids() -> None:
+    """SOP Instance and Class UIDs are copied verbatim into each image entry (parser 1.6.0)."""
+    dcm = dcmread("tests/example-dcms/bscans.dcm", stop_before_pixels=True)
+    assert update_modality(dcm) is True
+    meta = meta_images(dcm)
+    assert meta["sop_instance_uid"] == str(dcm.SOPInstanceUID)
+    assert meta["sop_class_uid"] == str(dcm.SOPClassUID) == "1.2.840.10008.5.1.4.1.1.77.1.5.4"
+
+
+def test_meta_images_sop_uids_absent(dicom_with_photo_locations: FileDataset) -> None:
+    """Datasets without SOP UIDs still produce the keys, set to null."""
+    update_modality(dicom_with_photo_locations)
+    meta = meta_images(dicom_with_photo_locations)
+    assert meta["sop_instance_uid"] is None
+    assert meta["sop_class_uid"] is None
+
+
+def test_meta_images_circular_scan(dicom_with_photo_locations: FileDataset) -> None:
+    """Circular B-scans (more than four reference coordinates) yield one point per coordinate pair, four at most."""
+    frame = dicom_with_photo_locations.PerFrameFunctionalGroupsSequence[0]
+    frame.OphthalmicFrameLocationSequence[0].ReferenceCoordinates = [
+        10.0,
+        20.0,
+        30.0,
+        40.0,
+        50.0,
+        60.0,
+        70.0,
+        80.0,
+        90.0,
+        100.0,
+    ]
+    update_modality(dicom_with_photo_locations)
+    meta = meta_images(dicom_with_photo_locations)
+    for content in meta["contents"]:
+        assert content["photo_locations"] == [
+            {"start": {"x": 20.0, "y": 10.0}},
+            {"start": {"x": 40.0, "y": 30.0}},
+            {"start": {"x": 60.0, "y": 50.0}},
+            {"start": {"x": 80.0, "y": 70.0}},
+        ]
+
+
 def test_absolute_path_symlink() -> None:
     with patch("pathlib.Path.resolve") as mock_resolve:
         mock_resolve.return_value = Path("/resolved/path")
@@ -78,9 +126,11 @@ def test_relative_path() -> None:
 
 
 def test_broken_symlink_as_relative() -> None:
-    with patch("pathlib.Path.is_absolute", return_value=False):
-        with patch("pathlib.Path.resolve", side_effect=FileNotFoundError):
-            assert set_output_dir("/home/user", "exported_data") == "/home/user/exported_data"
+    with (
+        patch("pathlib.Path.is_absolute", return_value=False),
+        patch("pathlib.Path.resolve", side_effect=FileNotFoundError),
+    ):
+        assert set_output_dir("/home/user", "exported_data") == "/home/user/exported_data"
 
 
 def test_relative_path_with_up() -> None:
@@ -102,7 +152,8 @@ def test_update_modality_opt(dicom_base: FileDataset) -> None:
     """Test updating modality when the modality is OPT."""
     dicom_base.Modality = "OPT"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.OCT  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.OCT
+    assert dicom_base.Modality == "OPT"  # the DICOM element itself is left untouched
 
 
 def test_update_modality_op_topcon(dicom_base: FileDataset) -> None:
@@ -110,7 +161,7 @@ def test_update_modality_op_topcon(dicom_base: FileDataset) -> None:
     dicom_base.Modality = "OP"
     dicom_base.Manufacturer = "TOPCON"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.COLOUR_PHOTO  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.COLOUR_PHOTO
 
 
 def test_update_modality_op_ir(dicom_base: FileDataset) -> None:
@@ -119,7 +170,7 @@ def test_update_modality_op_ir(dicom_base: FileDataset) -> None:
     dicom_base.Manufacturer = "Another Manufacturer"
     dicom_base.SeriesDescription = "SLO IR"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.SLO_INFRARED  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.SLO_INFRARED
 
 
 def test_update_modality_unknown(dicom_base: FileDataset) -> None:
@@ -128,7 +179,7 @@ def test_update_modality_unknown(dicom_base: FileDataset) -> None:
     dicom_base.Manufacturer = "Unknown Manufacturer"
     dicom_base.SeriesDescription = "Unknown Description"
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is ImageModality.UNKNOWN  # type: ignore
+    assert dicom_base.pdcm_modality is ImageModality.UNKNOWN
 
 
 def test_update_modality_unsupported(dicom_base: FileDataset) -> None:
@@ -157,14 +208,189 @@ def test_update_modality_op_various_descriptions(
     dicom_base.Modality = "OP"
     dicom_base.SeriesDescription = description
     assert update_modality(dicom_base) is True
-    assert dicom_base.Modality is expected_modality  # type: ignore
+    assert dicom_base.pdcm_modality is expected_modality
+
+
+@pytest.mark.parametrize(
+    "manufacturer, model, description, expected_modality",
+    [
+        ("TOPCON", "", "Colour", ImageModality.COLOUR_PHOTO),
+        ("TOPCON", "", "Fundus IR", ImageModality.INFRARED_PHOTO),
+        ("Topcon Healthcare", "Triton", "Colour", ImageModality.COLOUR_PHOTO),  # Triton identified by model name
+    ],
+)
+def test_update_modality_topcon(
+    dicom_base: FileDataset, manufacturer: str, model: str, description: str, expected_modality: ImageModality
+) -> None:
+    """Topcon colour and infrared photos, including Triton devices that do not say 'TOPCON' in Manufacturer."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = manufacturer
+    dicom_base.ManufacturerModelName = model
+    dicom_base.SeriesDescription = description
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is expected_modality
+
+
+@pytest.mark.parametrize(
+    "description, image_type, expected_modality",
+    [
+        ("OptomapPlus", ["ORIGINAL", "PRIMARY", "", "RED", "OPTOMAPPLUS ICG"], ImageModality.OPTOS_ICGA),
+        ("OptomapPlus", ["ORIGINAL", "PRIMARY", "", "RED", "OPTOMAPPLUS AF"], ImageModality.OPTOS_AF_IR),
+        ("OptomapPlus", ["ORIGINAL", "PRIMARY", "", "GREEN", "OPTOMAPPLUS AF"], ImageModality.UNKNOWN_ULTRAWIDEFIELD),
+        ("Angio", ["ORIGINAL", "PRIMARY", "", "FA"], ImageModality.OPTOS_FA),
+        ("Colour", ["ORIGINAL", "PRIMARY", "", "COLOR", "OPTOMAPPLUS RG"], ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD),
+        ("Something else", ["ORIGINAL", "PRIMARY"], ImageModality.UNKNOWN),
+    ],
+)
+def test_update_modality_optos_image_type(
+    dicom_base: FileDataset, description: str, image_type: list[str], expected_modality: ImageModality
+) -> None:
+    """Optos images classified from ImageType values."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "OPTOS"
+    dicom_base.SeriesDescription = description
+    dicom_base.ImageType = image_type
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is expected_modality
+
+
+@pytest.mark.parametrize(
+    "image_type, expected_modality",
+    [
+        (["ORIGINAL", "PRIMARY", "COLOR"], ImageModality.COLOUR_PHOTO),
+        (["ORIGINAL", "PRIMARY", "FAFGREEN"], ImageModality.AUTOFLUORESCENCE_GREEN),
+        (["ORIGINAL", "PRIMARY", "FAFBLUE"], ImageModality.AUTOFLUORESCENCE_BLUE),
+        (["ORIGINAL", "PRIMARY", "FA"], ImageModality.FLUORESCEIN_ANGIOGRAPHY),
+        (["ORIGINAL", "PRIMARY", "IR"], ImageModality.SLO_INFRARED),
+        (["ORIGINAL", "PRIMARY", "FAG"], ImageModality.FLUORESCEIN_ANGIOGRAPHY),  # via the generic hint lookup
+        (["ORIGINAL", "PRIMARY"], ImageModality.UNKNOWN),
+    ],
+)
+def test_update_modality_zeiss(
+    dicom_base: FileDataset, image_type: list[str], expected_modality: ImageModality
+) -> None:
+    """Zeiss images classified from ImageType values; unknown ones stay unknown (no default to FA)."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "Carl Zeiss Meditec AG"
+    dicom_base.ImageType = image_type
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is expected_modality
+
+
+def test_update_modality_exact_ir_description(dicom_base: FileDataset) -> None:
+    """A SeriesDescription of exactly 'IR' is an infrared SLO image."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "Heidelberg Engineering"
+    dicom_base.SeriesDescription = "IR"
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.SLO_INFRARED
+
+
+def test_update_modality_hint_in_series_description(dicom_base: FileDataset) -> None:
+    """An otherwise unknown OP image is classified by a modality code spelled out in SeriesDescription."""
+    dicom_base.Modality = "OP"
+    dicom_base.Manufacturer = "NIDEK"
+    dicom_base.SeriesDescription = "Fundus MP_IR 30deg"
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.MP_IR
+
+
+def test_update_modality_other_modality_with_hint(dicom_base: FileDataset) -> None:
+    """Non-OP/OPT objects are accepted when ImageType names a modality code (e.g. converted microperimetry)."""
+    dicom_base.Modality = "SC"
+    dicom_base.ImageType = ["DERIVED", "SECONDARY", "MP_IR"]
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.MP_IR
+
+
+def test_update_modality_skips_oct_angiography_report(dicom_base: FileDataset) -> None:
+    """OCT angiography report renderings are not B-scans and are skipped rather than exported as OCT."""
+    dicom_base.Modality = "OPT"
+    dicom_base.SeriesDescription = "Angiography Report Analysis"
+    assert update_modality(dicom_base) is False
+
+
+def test_update_modality_without_manufacturer(dicom_base: FileDataset) -> None:
+    """A missing Manufacturer element no longer raises; classification falls back to SeriesDescription."""
+    del dicom_base.Manufacturer
+    dicom_base.Modality = "OP"
+    dicom_base.SeriesDescription = "Volume IR"
+    assert update_modality(dicom_base) is True
+    assert dicom_base.pdcm_modality is ImageModality.SLO_INFRARED
+
+
+@pytest.mark.parametrize("date_str", ["20260312123456.789+0000", "20260312123456+0100", "20260312123456.789-0500"])
+def test_do_date_strips_utc_offset(date_str: str) -> None:
+    """DICOM DT values with a UTC offset are parsed as their naive local time."""
+    assert do_date(date_str, "%Y%m%d%H%M%S.%f", "%Y-%m-%d %H:%M:%S") == "2026-03-12 12:34:56"
+
+
+def test_group_by_acquisition_time_with_utc_offset(dicom_base: FileDataset) -> None:
+    """Acquisition times carrying a UTC offset are grouped like plain ones."""
+    first = copy.deepcopy(dicom_base)
+    second = copy.deepcopy(dicom_base)
+    first.AcquisitionDateTime = "20260312123456.000+0000"
+    second.AcquisitionDateTime = "20260312123457.500+0000"
+    groups = group_dcms_by_acquisition_time([first, second], tol=2)
+    assert len(groups) == 1
+    assert len(next(iter(groups.values()))) == 2
+
+
+# --- issue #5: laterality and scan datetime belong to the image, a group may mix eyes and times ----------------
+
+
+def _mixed_group(dicom_base: FileDataset) -> list[FileDataset]:
+    """Two scans of the same group: right eye at 12:34:56, left eye earlier at 12:00:00."""
+    right, left = copy.deepcopy(dicom_base), copy.deepcopy(dicom_base)
+    right.ImageLaterality, right.AcquisitionDateTime = "R", "20260312123456.000"
+    left.ImageLaterality, left.AcquisitionDateTime = "L", "20260312120000.000"
+    return [right, left]
+
+
+def test_meta_images_laterality_and_scan_datetime(dicom_base: FileDataset) -> None:
+    """Each image entry records its own eye and acquisition time (parser 1.7.0)."""
+    dicom_base.ImageLaterality = "L"
+    dicom_base.AcquisitionDateTime = "20260312123456.789+0000"
+    meta = meta_images(dicom_base)
+    assert meta["laterality"] == "L"
+    assert meta["scan_datetime"] == "2026-03-12 12:34:56"
+
+
+def test_group_laterality_and_scan_datetime(dicom_base: FileDataset) -> None:
+    """A group mixing both eyes is 'B' and dated by its earliest scan; homogeneous groups keep their value."""
+    group = _mixed_group(dicom_base)
+    assert group_laterality(group) == "B"
+    assert group_scan_datetime(group) == "2026-03-12 12:00:00"
+    assert group_laterality(group[:1]) == "R"
+    assert group_laterality([dicom_base]) is None  # no laterality element at all
+    assert group_scan_datetime([dicom_base]) == ""
+
+
+def test_process_dcm_meta_mixed_laterality_group(dicom_base: FileDataset, tmp_path: Path) -> None:
+    """Per-image laterality and scan_datetime survive; series and exam carry the group summary."""
+    process_dcm_meta(_mixed_group(dicom_base), tmp_path, keep="p")
+    metadata = json.loads((tmp_path / "metadata.json").read_text())
+    images = metadata["images"]["images"]
+    assert [image["laterality"] for image in images] == ["R", "L"]
+    assert [image["scan_datetime"] for image in images] == ["2026-03-12 12:34:56", "2026-03-12 12:00:00"]
+    assert metadata["series"]["laterality"] == "B"
+    assert metadata["exam"]["scan_datetime"] == "2026-03-12 12:00:00"
+    assert metadata["parser_version"] == [1, 7, 0]
+
+
+def test_output_folder_for_mixed_laterality(dicom_base: FileDataset, tmp_path: Path) -> None:
+    """The flat folder name says OU when the group mixes eyes, OD/OS when it does not."""
+    group = _mixed_group(dicom_base)
+    assert output_folder_for(group, tmp_path).name.endswith("_OU_OCT.DCM")
+    assert output_folder_for(group[:1], tmp_path).name.endswith("_OD_OCT.DCM")
+    assert output_folder_for(group[1:], tmp_path).name.endswith("_OS_OCT.DCM")
 
 
 def test_process_dcm_meta_with_D_in_keep_and_mapping(dicom_base: FileDataset) -> None:
     # Call the function with "D" in keep
     with TemporaryDirectory() as tmpdir:
         process_dcm_meta([dicom_base], Path(tmpdir), keep="D", mapping="tests/map.csv")
-        rjson = json.load(open(os.path.join(tmpdir, "metadata.json")))
+        rjson = json.loads((Path(tmpdir) / "metadata.json").read_text())
         assert rjson["patient"]["date_of_birth"] == "1902-01-01"
         assert rjson["patient"]["patient_key"] == "00123"
 
@@ -241,8 +467,8 @@ def test_process_and_save_csv_no_changes(csv_data: list[list[str]]) -> None:
         # Create reserved CSV with initial csv_data
         write_to_csv(reserved_csv, csv_data, header=["study_id", "patient_id"])
 
-        # Process and save the same CSV data
-        process_and_save_csv(csv_data, reserved_csv.name)
+        # Process and save the same CSV data (full path: `.name` alone would write into the working directory)
+        process_and_save_csv(csv_data, reserved_csv)
 
         # Check if reserved CSV remains unchanged
         unchanged_data = read_csv(reserved_csv)
@@ -254,51 +480,51 @@ def test_process_and_save_csv_no_changes(csv_data: list[list[str]]) -> None:
         assert not backup_file.exists(), f"Did not expect backup file {backup_file} to exist"
 
 
-# skip this test for CI
-def test_process_dcm(temp_dir: str, input_dir2: Path, mocker: Any) -> None:
+def test_process_dcm(temp_dir: str, input_dir2: Path, mocker: MockerFixture) -> None:
+    # input_dir2 skips the test when tests/example_dir is not available
     mock_secho = mocker.patch("typer.secho")
     output_dir = Path(temp_dir)
-    p, s, new_old = process_dcm(input_path=input_dir2, output_dir=output_dir, overwrite=True)
+    _, _, new_old = process_dcm(input_path=input_dir2, output_dir=output_dir, overwrite=True)
     output_files_initial = list(output_dir.rglob("*.png"))
     assert len(output_files_initial) == 130, "No images were processed initially."
     assert set(new_old) == {("2910892726", "010-0001")}
 
     # Run process_dcm function with overwrite=False, should skip processing
-    p, s, new_old = process_dcm(input_path=input_dir2, output_dir=Path(temp_dir), overwrite=False)
+    _, _, new_old = process_dcm(input_path=input_dir2, output_dir=Path(temp_dir), overwrite=False)
 
-    msg = f"\nOutput directory '{output_dir / '2910892726_20180724_162720_63d3f1_OS_OCT.DCM'}' already exists with metadata and images. Skipping..."  # noqa: E501
+    msg = f"\nOutput directory '{output_dir / '2910892726_20180724_162720_63d3f1_OS_OCT.DCM'}' already exists with metadata and images. Skipping..."
     mock_secho.assert_called_with(msg, fg=typer.colors.YELLOW)
     assert len(list(output_dir.rglob("*.png"))) == len(output_files_initial)
 
 
 def test_process_dcm_dummy(temp_dir: str) -> None:
-    p, s, new_old = process_dcm(input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True)
+    _, _, new_old = process_dcm(input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True)
     assert new_old == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__340692_OU_U.DCM", "metadata.json"), bottom)
-        == "a770962058621bd0b4e6e6a5ba5e1e7a"
+        == "1f563ded8e08ecc393d8967d72b75dbc"
     )
 
 
 def test_process_dcm_dummy_group(temp_dir: str) -> None:
-    p, s, new_old = process_dcm(
+    _, _, new_old = process_dcm(
         input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True, time_group=True
     )
     assert new_old == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__OU_U.DCM", "metadata.json"), bottom)
-        == "a770962058621bd0b4e6e6a5ba5e1e7a"
+        == "1f563ded8e08ecc393d8967d72b75dbc"
     )
 
 
 def test_process_dcm_dummy_mapping(temp_dir: str) -> None:
-    p, s, pair = process_dcm(
+    _, _, pair = process_dcm(
         input_path=Path("tests/dummy_ex"), output_dir=Path(temp_dir), overwrite=True, mapping="tests/map.csv"
     )
     assert pair == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__340692_OU_U.DCM", "metadata.json"), bottom)
-        == "7d60d85ffcf442ccece3948af93873bc"
+        == "41f2cb2761853537ed6101fcca033da1"
     )
 
 

@@ -1,7 +1,6 @@
 """constant classes."""
 
 from enum import Enum, Flag, auto, unique
-from typing import cast
 
 RESERVED_CSV = "study_2_patient.csv"
 
@@ -77,6 +76,12 @@ class ImageModality(Enum):
     )
 
     OPTOS_FA = ("OPTOS_FA", "Optos Ultra-Widefield FA", ModalityFlag.IS_2D_IMAGE | ModalityFlag.IS_INTERIOR)
+    OPTOS_AF_IR = (
+        "OPTOS_AF_IR",
+        "Optos Ultra-Widefield AF - Infrared",
+        ModalityFlag.IS_2D_IMAGE | ModalityFlag.IS_INTERIOR,
+    )
+    OPTOS_ICGA = ("OPTOS_ICGA", "Optos Ultra-Widefield ICGA", ModalityFlag.IS_2D_IMAGE | ModalityFlag.IS_INTERIOR)
 
     UNKNOWN_ULTRAWIDEFIELD = (
         "OUWF",
@@ -87,6 +92,9 @@ class ImageModality(Enum):
     # VF-related modalities
     FDF = ("FDF", "Flicker Defined Form Perimetry")
     SAP = ("SAP", "Standard Automated Perimetry")
+
+    # Microperimetry
+    MP_IR = ("MP_IR", "Microperimetry - Infrared", ModalityFlag.IS_2D_IMAGE)
 
     # Values which are not real images or may contain sensitive data.
     # Librarian will want to ignore these
@@ -123,7 +131,7 @@ class ImageModality(Enum):
 
     def __str__(self) -> str:
         """Return the modality code."""
-        return cast(str, self.value)
+        return str(self.value)
 
     @property
     def is_colour(self) -> bool:

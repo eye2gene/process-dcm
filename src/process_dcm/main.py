@@ -2,7 +2,6 @@
 
 import csv
 import shutil
-import warnings
 from pathlib import Path
 
 import typer
@@ -11,12 +10,8 @@ from process_dcm import __version__
 from process_dcm.const import RESERVED_CSV
 from process_dcm.utils import delete_if_empty, process_and_save_csv, process_dcm
 
-# Filter the specific pydicom warning
-warnings.filterwarnings(
-    "ignore", message=r"The value length \(\d+\) exceeds the maximum length of \d+ allowed for VR CS\."
-)
-
 TOL = 2.0
+HELP = f"Process DICOM files in subfolders, extract images and metadata.\n\nVersion: {__version__}"
 
 app = typer.Typer(context_settings={"help_option_names": ["-h", "--help"]})
 
@@ -28,7 +23,7 @@ def print_version(value: bool) -> None:
         raise typer.Exit()
 
 
-@app.command()
+@app.command(help=HELP)
 def main(
     input_path: Path = typer.Argument(..., help="Input path to either a DCM file or a folder containing DICOM files."),
     image_format: str = typer.Option(
@@ -54,13 +49,31 @@ def main(
         "",
         "-m",
         "--mapping",
-        help=f"""Path to CSV containing patient_id to study_id mapping. If not provided and patient_id is anonymised, a '{RESERVED_CSV}' file will be generated.""",  # noqa: E501
+        help=f"""Path to CSV containing patient_id to study_id mapping. If not provided and patient_id is anonymised, a '{RESERVED_CSV}' file will be generated.""",
     ),
     keep: str = typer.Option(
         "",
         "-k",
         "--keep",
         help="Keep the specified fields (p: patient_key, n: names, d: date_of_birth, D: year-only DOB, g: gender)",
+    ),
+    preserve_folder_structure: bool = typer.Option(
+        False,
+        "-p",
+        "--preserve_folder_structure",
+        help="Mirror the input folder structure under the output directory instead of the flat "
+        "'{patient}_{date}_{hash}_{eye}_{modality}.DCM' folders. Not compatible with --group or --reset.",
+    ),
+    keep_dcm_name_as_folder: bool = typer.Option(
+        True,
+        "--keep_dcm_name_as_folder/--no_keep_dcm_name_as_folder",
+        help="With --preserve_folder_structure, write each DICOM's images into a folder named after the file. "
+        "Disable to write all acquisitions of an input folder into one output folder.",
+    ),
+    relative_source_file: bool = typer.Option(
+        False,
+        "--relative_source_file",
+        help="Write metadata 'source_file' relative to INPUT_PATH instead of the current working directory.",
     ),
     overwrite: bool = typer.Option(False, "-w", "--overwrite", help="Overwrite existing images if found."),
     reset: bool = typer.Option(False, "-r", "--reset", help="Reset the output directory if it exists."),
@@ -74,10 +87,7 @@ def main(
         help="Prints app version.",
     ),
 ) -> None:
-    """Process DICOM files in subfolders, extract images and metadata.
-
-    Version: 0.10.0
-    """
+    """Process DICOM files in subfolders, extract images and metadata."""
     keep_patient_key = "p" in keep
     if not keep_patient_key:
         if mapping == RESERVED_CSV:
@@ -98,6 +108,19 @@ def main(
         typer.secho("'--tol' option can only be used when '--group' is set.", fg="red")
         raise typer.Abort()
 
+    if preserve_folder_structure and group:
+        typer.secho(
+            "'--group' x '--preserve_folder_structure': are mutually excluding options", fg=typer.colors.BRIGHT_YELLOW
+        )
+        raise typer.Abort()
+    if preserve_folder_structure and reset:
+        typer.secho(
+            "'--reset' x '--preserve_folder_structure': are mutually excluding options (--reset only knows the flat "
+            "*.DCM layout)",
+            fg=typer.colors.BRIGHT_YELLOW,
+        )
+        raise typer.Abort()
+
     if reset:
         for dcm_folder in output_dir.glob("**/*.DCM"):
             if dcm_folder.is_dir():
@@ -116,6 +139,9 @@ def main(
         time_group=group,
         tol=tol,
         n_jobs=n_jobs,
+        preserve_folder_structure=preserve_folder_structure,
+        keep_dcm_name_as_folder=keep_dcm_name_as_folder,
+        relative_source_file=relative_source_file,
     )
 
     total = processed + skipped

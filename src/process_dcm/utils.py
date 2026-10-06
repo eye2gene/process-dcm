@@ -1,13 +1,14 @@
 """utils module."""
 
+import contextlib
 import csv
 import filecmp
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
-import warnings
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -26,7 +27,12 @@ from rich.progress import track
 from process_dcm import __version__
 from process_dcm.const import RESERVED_CSV, ImageModality
 
-warnings.filterwarnings("ignore", category=UserWarning, message="A value of type *")
+# process-dcm keeps its own per-dataset state in plain snake_case attributes on the pydicom Dataset, which pydicom
+# stores without VR validation. Never use real DICOM elements (Modality, AccessionNumber, ReferencedFileID, ...)
+# for it: pydicom 3 warns on every non-conformant value and the file's own values would be clobbered.
+#   pdcm_modality: ImageModality resolved by update_modality()
+#   pdcm_group:    image group counter used in output file names and metadata "group" / "source_id"
+#   pdcm_source:   path of the source DICOM file, written to metadata "source_file"
 
 dict_eye = {"R": "OD", "L": "OS"}
 
@@ -37,8 +43,17 @@ def _check_metadata_exists(output_dir: Path) -> bool:
     return meta_path.exists()
 
 
+_UTC_OFFSET = re.compile(r"[+-]\d{4}$")  # a DICOM DT value may end with a UTC offset, e.g. 20260312123456.789+0000
+
+
+def strip_utc_offset(date_str: str) -> str:
+    """Remove a trailing DICOM UTC offset (``+HHMM`` / ``-HHMM``) so the value matches the naive strptime formats."""
+    return _UTC_OFFSET.sub("", date_str)
+
+
 def do_date(date_str: str, input_format: str, output_format: str) -> str:
     """Convert DCM datetime strings to metadata.json string format."""
+    date_str = strip_utc_offset(date_str)
     if "." not in date_str:
         input_format = input_format.split(".")[0]
     try:
@@ -77,30 +92,99 @@ def set_output_dir(ref_path: str | Path, a_path: str | Path) -> str:
         return os.path.join(ref_path, path_obj.as_posix())
 
 
-def meta_images(dcm_obj: FileDataset) -> dict:
+def _input_root(input_path: Path) -> Path:
+    """Return the folder that relative output paths are computed from: the input folder, or a single file's parent."""
+    return input_path if input_path.is_dir() else input_path.parent
+
+
+def _relative_to_input(source: Path | str, input_path: Path) -> Path:
+    """Return ``source`` relative to the input root.
+
+    Paths are made absolute without following symlinks, so symlinked inputs keep their own names. If that still
+    places the source outside the input root (e.g. DICOMDIR paths that pydicom resolved while the input path goes
+    through a symlink), both sides are resolved and compared again.
+    """
+    root = _input_root(input_path)
+    relative = Path(os.path.relpath(os.path.abspath(source), os.path.abspath(root)))
+    if relative.parts and relative.parts[0] == os.pardir:
+        relative = Path(os.path.relpath(Path(source).resolve(), root.resolve()))
+    return relative
+
+
+def source_file_label(source: Path | str | None, input_path: Path | None, relative_source_file: bool) -> str | None:
+    """Path written to metadata ``source_file``.
+
+    Args:
+        source: Path of the source DICOM file, or None when unknown.
+        input_path: The input file or folder given to process-dcm.
+        relative_source_file: Write the path relative to the input folder instead of the working directory.
+
+    Returns:
+        The path string, or None when there is no source.
+    """
+    if source is None:
+        return None
+    if relative_source_file and input_path is not None:
+        return _relative_to_input(source, input_path).as_posix()
+    return os.path.relpath(str(source), os.getcwd())
+
+
+def image_laterality(dcm_obj: FileDataset) -> str | None:
+    """Return the eye an image belongs to (``ImageLaterality``, falling back to ``Laterality``), or None."""
+    return dcm_obj.get("ImageLaterality", dcm_obj.get("Laterality"))
+
+
+def image_scan_datetime(dcm_obj: FileDataset) -> str:
+    """Return the image's ``AcquisitionDateTime`` as ``YYYY-MM-DD HH:MM:SS``, or an empty string when unparseable."""
+    return do_date(dcm_obj.get("AcquisitionDateTime", "00000000"), "%Y%m%d%H%M%S.%f", "%Y-%m-%d %H:%M:%S")
+
+
+def group_laterality(dcm_objs: list[FileDataset]) -> str | None:
+    """Return the laterality shared by a group of images, ``B`` (both) when they mix eyes, None when unknown."""
+    values = {lat for dcm_obj in dcm_objs if (lat := image_laterality(dcm_obj)) is not None}
+    if not values:
+        return None
+    return values.pop() if len(values) == 1 else "B"
+
+
+def group_scan_datetime(dcm_objs: list[FileDataset]) -> str:
+    """Return the earliest known acquisition datetime of a group of images, or an empty string."""
+    return min((dt for dcm_obj in dcm_objs if (dt := image_scan_datetime(dcm_obj))), default="")
+
+
+def meta_images(dcm_obj: FileDataset, input_path: Path | None = None, relative_source_file: bool = False) -> dict:
     """Takes a DICOM file dataset and extracts metadata from it to create a dictionary of image metadata.
 
     Args:
         dcm_obj (FileDataset): The input DICOM file dataset object.
+        input_path (Path, optional): The input file or folder given to process-dcm; only needed together with
+                                     ``relative_source_file``.
+        relative_source_file (bool, optional): Write ``source_file`` relative to the input folder instead of the
+                                               working directory. Defaults to False.
 
     Returns:
         dict: A dictionary containing the extracted metadata from the input DICOM file dataset.
     """
     meta: dict = defaultdict(dict)
-    mod = dcm_obj.get("Modality")
+    mod: ImageModality = dcm_obj.pdcm_modality  # set by update_modality()
+    group = getattr(dcm_obj, "pdcm_group", 0)
     meta["modality"] = mod.value
-    meta["group"] = dcm_obj.get("AccessionNumber", 0)
+    meta["group"] = group
+    # per image, because one DICOM group can hold scans of both eyes taken at different times (parser >= 1.7.0)
+    meta["laterality"] = image_laterality(dcm_obj)
+    meta["scan_datetime"] = image_scan_datetime(dcm_obj)
     meta["size"]["width"] = dcm_obj.get("Columns", 0)
     meta["size"]["height"] = dcm_obj.get("Rows", 0)
     meta["field_of_view"] = dcm_obj.get("HorizontalFieldOfView")
-    meta["source_id"] = f"{dcm_obj.Modality.code}-{dcm_obj.AccessionNumber}"  # pyright: ignore[reportArgumentType]
+    # DICOM instance identity, so downstream tools can associate records with the original objects (parser >= 1.6.0)
+    sop_instance_uid = dcm_obj.get("SOPInstanceUID")
+    sop_class_uid = dcm_obj.get("SOPClassUID")
+    meta["sop_instance_uid"] = str(sop_instance_uid) if sop_instance_uid is not None else None
+    meta["sop_class_uid"] = str(sop_class_uid) if sop_class_uid is not None else None
+    meta["source_id"] = f"{mod.code}-{group}"
 
     # Add relative path to source DICOM file if available
-    if hasattr(dcm_obj, "ReferencedFileID"):
-        # Store as string, relative to the output directory (target_dir)
-        meta["source_file"] = os.path.relpath(str(dcm_obj.ReferencedFileID), os.getcwd())  # pyright: ignore[reportArgumentType]
-    else:
-        meta["source_file"] = None  # pyright: ignore[reportArgumentType]
+    meta["source_file"] = source_file_label(getattr(dcm_obj, "pdcm_source", None), input_path, relative_source_file)
 
     if mod.is_2d_image:
         meta["dimensions_mm"]["width"] = dcm_obj.get("Columns", 0) * dcm_obj.get("PixelSpacing", [0, 0])[1]
@@ -137,9 +221,13 @@ def meta_images(dcm_obj: FileDataset) -> dict:
                 oo = ii.get("OphthalmicFrameLocationSequence")
                 if oo:
                     cc = ii.OphthalmicFrameLocationSequence[0].ReferenceCoordinates
-                    meta["contents"].append(
-                        {"photo_locations": [{"start": {"x": cc[1], "y": cc[0]}, "end": {"x": cc[3], "y": cc[2]}}]}
-                    )
+                    if len(cc) == 4:
+                        # line scan: start and end point
+                        locations = [{"start": {"x": cc[1], "y": cc[0]}, "end": {"x": cc[3], "y": cc[2]}}]
+                    else:
+                        # circular scan: up to four reference points, one entry each (parser >= 1.6.0)
+                        locations = [{"start": {"x": cc[i + 1], "y": cc[i]}} for i in range(0, min(len(cc), 8), 2)]
+                    meta["contents"].append({"photo_locations": locations})
                 else:
                     typer.secho("\nWARN: empty photo_locations", fg=typer.colors.RED)
                     meta["contents"].append({"photo_locations": []})
@@ -147,7 +235,14 @@ def meta_images(dcm_obj: FileDataset) -> dict:
     return meta
 
 
-def process_dcm_meta(dcm_objs: list[FileDataset], output_dir: Path, mapping: str = "", keep: str = "") -> None:
+def process_dcm_meta(
+    dcm_objs: list[FileDataset],
+    output_dir: Path,
+    mapping: str = "",
+    keep: str = "",
+    input_path: Path | None = None,
+    relative_source_file: bool = False,
+) -> None:
     """Extract and save metadata from a list of DICOM files into a JSON file.
 
     Args:
@@ -159,6 +254,9 @@ def process_dcm_meta(dcm_objs: list[FileDataset], output_dir: Path, mapping: str
         keep (str, optional): String containing the letters indicating which fields to keep.
                               Options: 'p' for patient key, 'n' for patient names, 'd' for precise date of birth,
                               'D' for anonymized date of birth (year only), and 'g' for gender. Defaults to "".
+        input_path (Path, optional): The input file or folder given to process-dcm (see ``relative_source_file``).
+        relative_source_file (bool, optional): Write each image's ``source_file`` relative to the input folder
+                                               instead of the working directory. Defaults to False.
     """
     meta_file = output_dir / "metadata.json"
     metadata: dict = defaultdict(dict)
@@ -166,17 +264,20 @@ def process_dcm_meta(dcm_objs: list[FileDataset], output_dir: Path, mapping: str
     metadata["exam"] = {}
     metadata["series"] = {}
     metadata["images"]["images"] = []
-    metadata["parser_version"] = [1, 5, 3]  # pyright: ignore[reportArgumentType]
+    metadata["parser_version"] = [1, 7, 0]  # pyright: ignore[reportArgumentType]
     metadata["py_dcm_version"] = [int(x) for x in __version__.split(".") if x.isdigit()]  # pyright: ignore[reportArgumentType]
 
     keep_gender = "g" in keep
     keep_names = "n" in keep
     anon_pat_key = "p" not in keep
     study_2_patient = {}
-    if anon_pat_key:
-        if mapping:
-            study_2_patient = dict(read_csv(mapping))
-            anon_pat_key = False
+    if anon_pat_key and mapping:
+        study_2_patient = dict(read_csv(mapping))
+        anon_pat_key = False
+
+    # group-level values: the images carry their own laterality and scan_datetime (issue #5)
+    series_laterality = group_laterality(dcm_objs)
+    exam_scan_datetime = group_scan_datetime(dcm_objs)
 
     for dcm_obj in dcm_objs:
         patient_key = dcm_obj.get("PatientID", "")
@@ -210,16 +311,14 @@ def process_dcm_meta(dcm_objs: list[FileDataset], output_dir: Path, mapping: str
         metadata["patient"]["source_id"] = dcm_obj.get("FrameOfReferenceUID")
 
         metadata["exam"]["manufacturer"] = dcm_obj.get("Manufacturer")
-        metadata["exam"]["scan_datetime"] = do_date(
-            dcm_obj.get("AcquisitionDateTime", "00000000"), "%Y%m%d%H%M%S.%f", "%Y-%m-%d %H:%M:%S"
-        )
+        metadata["exam"]["scan_datetime"] = exam_scan_datetime  # earliest in the group
         metadata["exam"]["scanner_model"] = dcm_obj.get("ManufacturerModelName")
         metadata["exam"]["scanner_serial_number"] = dcm_obj.get("DeviceSerialNumber")
         metadata["exam"]["scanner_software_version"] = str(dcm_obj.get("SoftwareVersions"))
         metadata["exam"]["scanner_last_calibration_date"] = ""
         metadata["exam"]["source_id"] = dcm_obj.get("FrameOfReferenceUID")
 
-        metadata["series"]["laterality"] = dcm_obj.get("ImageLaterality", dcm_obj.get("Laterality"))
+        metadata["series"]["laterality"] = series_laterality  # "B" when the group mixes both eyes
         metadata["series"]["fixation"] = ""
         aa = dcm_obj.get("AnatomicRegionSequence")
         if aa:
@@ -227,7 +326,7 @@ def process_dcm_meta(dcm_objs: list[FileDataset], output_dir: Path, mapping: str
         metadata["series"]["anterior"] = ""  # bool
         metadata["series"]["protocol"] = dcm_obj.get("SeriesDescription")  # Guessing, "Rectangular volume"
         metadata["series"]["source_id"] = dcm_obj.get("FrameOfReferenceUID")
-        metadata["images"]["images"].append(meta_images(dcm_obj))
+        metadata["images"]["images"].append(meta_images(dcm_obj, input_path, relative_source_file))
     if len(dcm_objs) > 1:
         metadata["series"]["protocol"] = "OCT ART Volume"
 
@@ -240,57 +339,126 @@ process_dcm_meta.__doc__ = (
 )
 
 
+# OPT objects that are rendered reports rather than B-scan acquisitions; they are skipped, not exported as OCT
+_OPT_REPORT_DESCRIPTIONS = frozenset({"Angiography Report Analysis"})
+
+
+def _modality_from_hints(series: str, image_type: list[str]) -> ImageModality | None:
+    """Last-resort lookup of a modality code spelled out in SeriesDescription (space-delimited) or in ImageType.
+
+    Args:
+        series: The SeriesDescription value, or an empty string.
+        image_type: The ImageType values as plain strings.
+
+    Returns:
+        The first matching modality in declaration order, or None when nothing matches.
+    """
+    for modality in ImageModality:
+        if modality is ImageModality.UNKNOWN:
+            continue
+        if f" {modality.code} " in series or modality.code in image_type:
+            return modality
+    if "FAG" in image_type:  # German "Fluoreszenzangiographie" (Zeiss)
+        return ImageModality.FLUORESCEIN_ANGIOGRAPHY
+    return None
+
+
+def _optos_modality(dcm: FileDataset, series: str, image_type: list[str]) -> ImageModality:
+    """Classify an Optos OP image from SeriesDescription, ImageType, contrast agent and field of view."""
+    series_upper = series.upper()
+    has_fluorescein = any("Fluorescein" in str(item) for item in dcm.get("ContrastBolusAgentSequence", []))
+    if ("FA " in series and has_fluorescein) or "FA" in image_type:
+        return ImageModality.OPTOS_FA
+    if "RG OPTOMAP" in series_upper or "OPTOMAPPLUS RG" in image_type:
+        return ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD
+    if "OPTOMAPPLUS ICG" in image_type:
+        return ImageModality.OPTOS_ICGA
+    if "OPTOMAPPLUS AF" in image_type:
+        return ImageModality.OPTOS_AF_IR if "RED" in image_type else ImageModality.UNKNOWN_ULTRAWIDEFIELD
+    if dcm.get("HorizontalFieldOfView", 0) == 200:
+        return ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD  # no cov AWSS
+    if "OPTOMAP" in series_upper:
+        return ImageModality.UNKNOWN_ULTRAWIDEFIELD
+    return ImageModality.UNKNOWN
+
+
+def _zeiss_modality(image_type: list[str]) -> ImageModality:
+    """Classify a Zeiss OP image from its ImageType values."""
+    if "COLOR" in image_type:
+        return ImageModality.COLOUR_PHOTO
+    if "FAFGREEN" in image_type:
+        return ImageModality.AUTOFLUORESCENCE_GREEN
+    if "FAFBLUE" in image_type:
+        return ImageModality.AUTOFLUORESCENCE_BLUE
+    if "FA" in image_type:
+        return ImageModality.FLUORESCEIN_ANGIOGRAPHY
+    if "IR" in image_type:
+        return ImageModality.SLO_INFRARED
+    return ImageModality.UNKNOWN
+
+
 def update_modality(dcm: FileDataset) -> bool:
-    """Updates the modality of the given DICOM object based on its Manufacturer and SeriesDescription attributes.
+    """Resolves the image modality of a DICOM object from Modality, Manufacturer, SeriesDescription and ImageType.
+
+    The result is stored in the plain attribute ``dcm.pdcm_modality`` (an :class:`ImageModality`); the DICOM
+    ``Modality`` element itself is left untouched. OP/OPT images that cannot be classified resolve to
+    :attr:`ImageModality.UNKNOWN` and are still exported; other modalities are accepted only when a modality code
+    is spelled out in SeriesDescription or ImageType.
 
     Args:
         dcm (pydicom.dataset.FileDataset): The DICOM object to update.
 
     Returns:
-        bool: True if modality is updated; False if the modality is unsupported.
+        bool: True if modality is resolved; False if the object is unsupported and must be skipped.
     """
-    if dcm.get("Modality") is None:
+    modality = dcm.get("Modality")
+    if modality is None:
         return False  # No modality, continue # no cov
-    elif dcm.Modality == "OPT":
-        dcm.Modality = ImageModality.OCT
-    elif dcm.Modality == "OP":
-        if dcm.Manufacturer.upper() == "TOPCON":
-            dcm.Modality = ImageModality.COLOUR_PHOTO
-        elif dcm.Manufacturer.upper() == "OPTOS":
-            if dcm.get("HorizontalFieldOfView", 0) == 200:
-                dcm.Modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD  # no cov AWSS
-            elif "FA " in dcm.get("SeriesDescription", "") and any(
-                "Fluorescein" in str(item) for item in dcm.get("ContrastBolusAgentSequence", [])
-            ):
-                dcm.Modality = ImageModality.OPTOS_FA
-            elif "RG OPTOMAP" in dcm.get("SeriesDescription", "").upper():
-                dcm.Modality = ImageModality.PSEUDOCOLOUR_ULTRAWIDEFIELD
-            elif "OPTOMAP" in dcm.get("SeriesDescription", "").upper():
-                dcm.Modality = ImageModality.UNKNOWN_ULTRAWIDEFIELD
-            else:
-                dcm.Modality = ImageModality.UNKNOWN
-        elif " IR" in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.SLO_INFRARED
-        elif " BAF " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.AUTOFLUORESCENCE_BLUE
-        elif " ICGA " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.INDOCYANINE_GREEN_ANGIOGRAPHY
-        elif " FA&ICGA " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.FA_ICGA
-        elif " FA " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.FLUORESCEIN_ANGIOGRAPHY
-        elif " RF " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.RED_FREE
-        elif " BR " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.REFLECTANCE_BLUE
-        elif " MColor " in dcm.get("SeriesDescription", ""):
-            dcm.Modality = ImageModality.REFLECTANCE_MCOLOR
-        else:
-            dcm.Modality = ImageModality.UNKNOWN
-    else:
-        return False  # Unsupported modality, continue
 
-    return True  # Modality updated successfully
+    series = str(dcm.get("SeriesDescription", ""))
+    image_type = [str(value) for value in dcm.get("ImageType", [])]
+    manufacturer = str(dcm.get("Manufacturer", "")).upper()
+    model = str(dcm.get("ManufacturerModelName", "")).upper()
+
+    resolved = ImageModality.UNKNOWN
+    if modality == "OPT":
+        if series in _OPT_REPORT_DESCRIPTIONS:
+            return False  # rendered report, not a scan
+        resolved = ImageModality.OCT
+    elif modality == "OP":
+        if manufacturer == "TOPCON" or model == "TRITON":
+            resolved = ImageModality.INFRARED_PHOTO if " IR" in series else ImageModality.COLOUR_PHOTO
+        elif manufacturer == "OPTOS":
+            resolved = _optos_modality(dcm, series, image_type)
+        elif "ZEISS" in manufacturer:
+            resolved = _zeiss_modality(image_type)
+        elif " IR" in series or series == "IR":
+            resolved = ImageModality.SLO_INFRARED
+        elif " BAF " in series:
+            resolved = ImageModality.AUTOFLUORESCENCE_BLUE
+        elif " ICGA " in series:
+            resolved = ImageModality.INDOCYANINE_GREEN_ANGIOGRAPHY
+        elif " FA&ICGA " in series:
+            resolved = ImageModality.FA_ICGA
+        elif " FA " in series:
+            resolved = ImageModality.FLUORESCEIN_ANGIOGRAPHY
+        elif " RF " in series:
+            resolved = ImageModality.RED_FREE
+        elif " BR " in series:
+            resolved = ImageModality.REFLECTANCE_BLUE
+        elif " MColor " in series:
+            resolved = ImageModality.REFLECTANCE_MCOLOR
+    else:
+        # e.g. secondary-capture or converted objects: accepted only when the hints name a modality
+        hinted = _modality_from_hints(series, image_type)
+        if hinted is None:
+            return False  # Unsupported modality, continue
+        resolved = hinted
+
+    if resolved is ImageModality.UNKNOWN:
+        resolved = _modality_from_hints(series, image_type) or ImageModality.UNKNOWN
+    dcm.pdcm_modality = resolved
+    return True  # Modality resolved successfully
 
 
 def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> dict[str, list[FileDataset]]:
@@ -306,6 +474,7 @@ def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> d
     grouped_dcms: dict[str, list[FileDataset]] = defaultdict(list)
 
     def parse_datetime(dt_str: str) -> datetime:
+        dt_str = strip_utc_offset(dt_str)
         try:
             return datetime.strptime(dt_str, "%Y%m%d%H%M%S.%f")
         except ValueError:
@@ -317,7 +486,7 @@ def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> d
             try:
                 acquisition_datetime = parse_datetime(acquisition_datetime_str)
                 # Find the closest group within the tolerance
-                for group_time_str, group in grouped_dcms.items():
+                for group_time_str in grouped_dcms:
                     if group_time_str != "unknown":
                         group_time = parse_datetime(group_time_str)
                         if abs(acquisition_datetime - group_time) <= timedelta(seconds=tol):
@@ -337,6 +506,45 @@ def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> d
     return grouped_dcms
 
 
+def output_folder_for(
+    dcm_objs: list[FileDataset],
+    output_dir: Path,
+    time_group: bool = False,
+    input_path: Path | None = None,
+    preserve_folder_structure: bool = False,
+    keep_dcm_name_as_folder: bool = True,
+) -> Path:
+    """Return the folder that receives the images and metadata of an acquisition group.
+
+    The default (flat) layout is ``{output_dir}/{patient}_{date}_{time}[_{hash}]_{eye}_{modality}.DCM``, where the
+    eye is ``OD``/``OS`` when the whole group agrees and ``OU`` otherwise. With ``preserve_folder_structure`` the input
+    tree is mirrored instead: ``{output_dir}/{relative folder}/{file stem}``, or just ``{output_dir}/{relative folder}``
+    when ``keep_dcm_name_as_folder`` is off.
+
+    Args:
+        dcm_objs: The DICOMs of the group, first one first (its path, patient, date and modality name the folder).
+        output_dir: Root output directory.
+        time_group: Whether groups were formed by acquisition time (no frame-reference hash in the name).
+        input_path: The input file or folder given to process-dcm; required for ``preserve_folder_structure``.
+        preserve_folder_structure: Mirror the input folder structure instead of using the flat layout.
+        keep_dcm_name_as_folder: With ``preserve_folder_structure``, add a leaf folder named after the DICOM file.
+
+    Returns:
+        The target folder (not created).
+    """
+    dcm_obj = dcm_objs[0]
+    if preserve_folder_structure and input_path is not None:
+        relative = _relative_to_input(dcm_obj.pdcm_source, input_path)
+        target_dir = output_dir / relative.parent
+        return target_dir / relative.stem if keep_dcm_name_as_folder else target_dir
+
+    date_tag = do_date(dcm_obj.get("AcquisitionDateTime", "00000000"), "%Y%m%d%H%M%S.%f", "%Y%m%d_%H%M%S")
+    if not time_group:
+        date_tag = f"{date_tag}_{hex_hash(dcm_obj.get('FrameOfReferenceUID', '0'))}"
+    lat = dict_eye.get(group_laterality(dcm_objs), "OU")
+    return output_dir / f"{dcm_obj.PatientID}_{date_tag}_{lat}_{dcm_obj.pdcm_modality.code}.DCM"
+
+
 def process_dcm_images(
     dcm_objs: list[FileDataset],
     output_dir: Path,
@@ -346,15 +554,23 @@ def process_dcm_images(
     overwrite: bool = False,
     quiet: bool = False,
     time_group: bool = False,
+    input_path: Path | None = None,
+    preserve_folder_structure: bool = False,
+    keep_dcm_name_as_folder: bool = True,
+    relative_source_file: bool = False,
 ) -> str:
-    """Processes DICOM images and saves them to a directory."""
-    d0 = dcm_objs[0]
-    date_tag = do_date(d0.get("AcquisitionDateTime", "00000000"), "%Y%m%d%H%M%S.%f", "%Y%m%d_%H%M%S")
-    if not time_group:
-        ref = hex_hash(d0.get("FrameOfReferenceUID", "0"))
-        date_tag = f"{do_date(d0.get('AcquisitionDateTime', '00000000'), '%Y%m%d%H%M%S.%f', '%Y%m%d_%H%M%S')}_{ref}"
-    lat = dict_eye.get(d0.get("ImageLaterality", d0.get("Laterality")), "OU")
-    target_dir = output_dir / f"{d0.PatientID}_{date_tag}_{lat}_{d0.Modality.code}.DCM"
+    """Processes DICOM images and saves them to a directory.
+
+    See :func:`output_folder_for` for the folder layout options and :func:`process_dcm` for the other arguments.
+    """
+    target_dir = output_folder_for(
+        dcm_objs,
+        output_dir,
+        time_group=time_group,
+        input_path=input_path,
+        preserve_folder_structure=preserve_folder_structure,
+        keep_dcm_name_as_folder=keep_dcm_name_as_folder,
+    )
 
     if overwrite:
         shutil.rmtree(target_dir, ignore_errors=True)
@@ -381,10 +597,10 @@ def process_dcm_images(
             arr = np.expand_dims(arr, axis=0)
 
         for i in range(dcmO.NumberOfFrames):
-            out_img = os.path.join(target_dir, f"{dcmO.Modality.code}-{dcmO.AccessionNumber}_{i}.{image_format}")
+            out_img = os.path.join(target_dir, f"{dcmO.pdcm_modality.code}-{dcmO.pdcm_group}_{i}.{image_format}")
             while os.path.exists(out_img):
-                dcmO.AccessionNumber += 1  # increase group_id
-                out_img = os.path.join(target_dir, f"{dcmO.Modality.code}-{dcmO.AccessionNumber}_{i}.{image_format}")
+                dcmO.pdcm_group += 1  # increase group_id
+                out_img = os.path.join(target_dir, f"{dcmO.pdcm_modality.code}-{dcmO.pdcm_group}_{i}.{image_format}")
 
             array = cv2.normalize(arr[i], None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8UC1)  # type: ignore #AWSS
 
@@ -397,7 +613,14 @@ def process_dcm_images(
 
             image = Image.fromarray(array)
             image.save(out_img)
-    process_dcm_meta(dcm_objs=dcm_objs, output_dir=target_dir, mapping=mapping, keep=keep)
+    process_dcm_meta(
+        dcm_objs=dcm_objs,
+        output_dir=target_dir,
+        mapping=mapping,
+        keep=keep,
+        input_path=input_path,
+        relative_source_file=relative_source_file,
+    )
     return "processed"
 
 
@@ -430,6 +653,9 @@ def process_dcm(
     time_group: bool = False,
     tol: float = 2,
     n_jobs: int = 1,
+    preserve_folder_structure: bool = False,
+    keep_dcm_name_as_folder: bool = True,
+    relative_source_file: bool = False,
 ) -> tuple[int, int, list[tuple[str, str]]]:
     """Process DICOM files from the input directory and save images in a specified format.
 
@@ -454,6 +680,14 @@ def process_dcm(
                                      Defaults to False.
         tol (float, optional): Time tolerance in seconds for grouping DICOM files by AcquisitionDateTime. Defaults to 2.
         n_jobs (int, optional): The number of parallel jobs to utilize for processing. Defaults to 1.
+        preserve_folder_structure (bool, optional): Mirror the input folder structure under ``output_dir`` instead
+                                                    of the flat ``{{patient}}_{{date}}_{{hash}}_{{eye}}_{{modality}}.DCM``
+                                                    folders (this docstring is run through str.format, hence the
+                                                    doubled braces). Defaults to False.
+        keep_dcm_name_as_folder (bool, optional): With ``preserve_folder_structure``, write each DICOM's images into
+                                                  a leaf folder named after the file. Defaults to True.
+        relative_source_file (bool, optional): Write metadata ``source_file`` relative to ``input_path`` instead of
+                                               the working directory. Defaults to False.
 
     Returns:
         tuple[int, int, list[tuple[str, str]]]: A tuple containing the number of processed files, the number of errors,
@@ -474,17 +708,17 @@ def process_dcm(
         dicomdir_fs.remove(dicomdir_fs.find(Modality="OT"))
         for dcmf in dicomdir_fs.find():
             dcm = dcmread(dcmf.path)
-            dcm.ReferencedFileID = dcmf.path
+            dcm.pdcm_source = dcmf.path
             tmp_dcm_objs.append(dcm)
     elif input_path.is_file():
         dcm = dcmread(input_path)
-        dcm.ReferencedFileID = input_path
+        dcm.pdcm_source = input_path
         tmp_dcm_objs.append(dcm)
     else:
-        for file in input_path.rglob("*"):
+        for file in sorted(input_path.rglob("*")):  # sorted: deterministic image order across filesystems
             if file.is_file() and is_dicom_file(file):
                 dcm = dcmread(file)
-                dcm.ReferencedFileID = file
+                dcm.pdcm_source = file
                 tmp_dcm_objs.append(dcm)
 
     dcm_objs0 = [dcm for dcm in tmp_dcm_objs if dcm.get("Modality")]
@@ -516,14 +750,14 @@ def process_dcm(
                 new_patient_key = patient_2_study.get(patient_id, new_patient_key)
 
         dcms = []
-        sorted_group = sorted(group, key=lambda dcm: dcm.Modality.code)
+        sorted_group = sorted(group, key=lambda dcm: dcm.pdcm_modality.code)
         for dcm in sorted_group:
-            if dcm.Modality == ImageModality.UNKNOWN:
+            if dcm.pdcm_modality == ImageModality.UNKNOWN:
                 typer.secho(
-                    f"\nWARN: Unknown modality for {dcm.ReferencedFileID}\n-> {output_dir}",
+                    f"\nWARN: Unknown modality for {dcm.pdcm_source}\n-> {output_dir}",
                     fg=typer.colors.RED,
                 )
-            dcm.AccessionNumber = 0
+            dcm.pdcm_group = 0
             if not dcm.get("NumberOfFrames"):
                 dcm.NumberOfFrames = 1
             if not keep_patient_key:
@@ -539,6 +773,10 @@ def process_dcm(
             overwrite=overwrite,
             quiet=quiet,
             time_group=time_group,
+            input_path=input_path,
+            preserve_folder_structure=preserve_folder_structure,
+            keep_dcm_name_as_folder=keep_dcm_name_as_folder,
+            relative_source_file=relative_source_file,
         )
         return res, (new_patient_key, patient_id)
 
@@ -590,7 +828,7 @@ def is_dicom_file(filepath: str | Path) -> bool:
 
 def get_md5(file_path: Path | str | list[str] | list[Path], minus: int = 0) -> str:
     """Calculate the MD5 checksum of a file or list of files, optionally suppressing lines from the bottom."""
-    md5_hash = hashlib.md5()
+    md5_hash = hashlib.md5(usedforsecurity=False)  # checksum only, not a security primitive
 
     def process_file(file: Path | str) -> None:
         with open(file, "rb") as f:
@@ -651,10 +889,11 @@ def save_to_temp_file(data: list[list[str]]) -> str:
     Returns:
         str: The path of the temporary file.
     """
-    temp_file = tempfile.NamedTemporaryFile(delete=False, mode="w", newline="", suffix=".csv")
-    temp_file.close()  # Close the NamedTemporaryFile to be reused by write_to_csv
-    write_to_csv(temp_file.name, data, header=["study_id", "patient_id"])
-    return temp_file.name
+    # Close the NamedTemporaryFile first so it can be reused by write_to_csv
+    with tempfile.NamedTemporaryFile(delete=False, mode="w", newline="", suffix=".csv") as temp_file:
+        temp_name = temp_file.name
+    write_to_csv(temp_name, data, header=["study_id", "patient_id"])
+    return temp_name
 
 
 def files_are_identical(file1: str | Path, file2: str | Path) -> bool:
@@ -724,7 +963,7 @@ def read_csv(file_path: str | Path) -> list[list[str]]:
         return list(reader)
 
 
-def write_to_csv(file_path: str | Path, data: list[list[str]], header: list[str] = []) -> None:
+def write_to_csv(file_path: str | Path, data: list[list[str]], header: list[str] | None = None) -> None:
     """Writes data to a CSV file at the specified file path.
 
     Args:
@@ -769,17 +1008,13 @@ def delete_if_empty(folder_path: str | Path, n_jobs: int = 1) -> bool:
             if item.is_file():
                 is_empty = False
                 break
-            if item.is_dir():
-                if not delete_if_empty(item, n_jobs=1):  # Recursive call, but without parallelism
-                    is_empty = False
-                    break
+            if item.is_dir() and not delete_if_empty(item, n_jobs=1):  # Recursive call, but without parallelism
+                is_empty = False
+                break
 
         if is_empty:
-            with lock:
-                try:
-                    folder.rmdir()
-                except FileNotFoundError:  # no cov AWSS
-                    pass
+            with lock, contextlib.suppress(FileNotFoundError):
+                folder.rmdir()
 
         return is_empty
 
