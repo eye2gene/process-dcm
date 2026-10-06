@@ -15,56 +15,24 @@ jobs:
       # process-dcm supports 3.11+ (the reusable default is 3.12/3.13 only)
       python-versions: '["3.11", "3.12", "3.13"]'
 
-  coverage-badge:
-    runs-on: ubuntu-latest
-    needs: [ci]
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: astral-sh/setup-uv@main
-
-      # The ci job already produced coverage.xml and uploaded it as an artifact, so
-      # pull it here instead of re-running the suite, then render it to a
-      # self-contained SVG committed into the repo. The README references
-      # assets/coverage.svg by relative path so it renders for anyone who can see
-      # the repo, without a third party.
-      - name: Download coverage report
-        uses: actions/download-artifact@v5
-        with:
-          name: coverage-3.12
-
-      - name: Render coverage badge
-        run: |
-          mkdir -p assets
-          uvx --from "genbadge[coverage]" genbadge coverage -i coverage.xml -o assets/coverage.svg -s
-
-      - name: Commit coverage badge if it changed
-        run: |
-          if git diff --quiet -- assets/coverage.svg; then
-            echo "Coverage badge unchanged."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/coverage.svg
-          git commit -m "chore: update coverage badge [skip ci]"
-          git push
-
   release:
     runs-on: ubuntu-latest
-    needs: [ci, coverage-badge]
+    needs: [ci]
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
     concurrency:
-      group: release
+      group: release-${{ github.ref_name }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reset to the tested commit
+        run: git reset --hard "$GITHUB_SHA"
 
       - uses: astral-sh/setup-uv@main
 
@@ -87,3 +55,73 @@ jobs:
         uses: python-semantic-release/publish-action@v9
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  coverage-badge:
+    runs-on: ubuntu-latest
+    needs: [ci, release]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@main
+
+      # The ci job already produced coverage.xml and uploaded it as an artifact, so
+      # pull it here instead of re-running the suite, then render it to a
+      # self-contained SVG committed into the repo. The README references
+      # assets/coverage.svg by relative path so it renders for anyone who can see
+      # the repo, without a third party.
+      - name: Download coverage report
+        uses: actions/download-artifact@v5
+        with:
+          name: coverage-3.12
+
+      - name: Render coverage badge
+        run: |
+          mkdir -p assets
+          uvx --from "genbadge[coverage]" genbadge coverage -i coverage.xml -o assets/coverage.svg -s
+
+      - name: Commit coverage badge if it changed
+        env:
+          RELEASED: ${{ needs.release.outputs.released }}
+          RELEASE_COMMIT_SHA: ${{ needs.release.outputs.commit_sha }}
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          if [ "$RELEASED" = "true" ]; then
+            expected_tip="$RELEASE_COMMIT_SHA"
+          else
+            expected_tip="$TRIGGER_SHA"
+          fi
+          if [ -z "$expected_tip" ]; then
+            echo "Expected branch tip is empty."
+            exit 1
+          fi
+
+          git fetch origin main
+          current_tip="$(git rev-parse origin/main)"
+          if [ "$current_tip" != "$expected_tip" ]; then
+            echo "Skipping stale coverage badge: origin/main is $current_tip, expected $expected_tip."
+            exit 0
+          fi
+          if git diff --quiet -- assets/coverage.svg; then
+            echo "Coverage badge unchanged."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/coverage.svg
+          git commit -m "chore: update coverage badge [skip ci]"
+          if ! git push origin HEAD:main; then
+            git fetch origin main
+            current_tip="$(git rev-parse origin/main)"
+            if [ "$current_tip" != "$expected_tip" ]; then
+              echo "Skipping stale coverage badge after origin/main advanced to $current_tip."
+              exit 0
+            fi
+            echo "Coverage badge push failed while origin/main remained at $expected_tip."
+            exit 1
+          fi

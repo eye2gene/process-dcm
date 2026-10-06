@@ -142,6 +142,9 @@ version_toml = ["pyproject.toml:project.version"]
 branch = "main"
 commit_message = "chore(release): {version}"
 
+[tool.semantic_release.changelog]
+exclude_commit_patterns = ['^chore: update coverage badge \[skip ci\]$']
+
 [tool.ty]
 # All rules are enabled as "error" by default; no need to specify unless overriding.
 
