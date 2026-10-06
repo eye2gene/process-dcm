@@ -141,6 +141,7 @@ convention = "google"
 version_toml = ["pyproject.toml:project.version"]
 branch = "main"
 commit_message = "chore(release): {version}"
+allow_zero_version = true  # semantic-release v10 defaults it to false, which jumps straight to 1.0.0
 
 [tool.semantic_release.changelog]
 exclude_commit_patterns = ['^chore: update coverage badge \[skip ci\]$']
