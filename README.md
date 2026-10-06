@@ -90,7 +90,9 @@ exported_data/
 
 This layout cannot be combined with `--group` or `--reset`. In both layouts each image entry in `metadata.json` records
 its `source_file` relative to the current working directory; `--relative_source_file` makes it relative to `INPUT_PATH`
-instead. The metadata format is versioned by `parser_version` (currently 1.6.0).
+instead. The metadata format is versioned by `parser_version` (currently 1.7.0). Each image entry carries its own
+`laterality` and `scan_datetime`, because a DICOM group may hold scans of both eyes taken at different times; the
+series-level `laterality` is `B` and the exam-level `scan_datetime` is the earliest one in that case.
 
 ## Project structure
 

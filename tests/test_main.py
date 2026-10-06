@@ -91,19 +91,19 @@ def test_cli_without_args(runner: CliRunner) -> None:
     [
         (
             PNG_MD5S,
-            "928eaea84dcf85d710192981663be425",
+            "38694e562dd4e6245abc311cb2f52f72",
             "pndg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
             PNG_MD5S,
-            "27eb9a93abfa43a7e6d6828bd14e9644",
+            "c80b516a3599868aaf77a147fdc78d46",
             "pnDg",
             "bbff7a25-d32c-4192-9330-0bb01d49f746",
         ),
         (
             PNG_MD5S,
-            "72a8d7f0f7f043a6746056ba6e826b25",
+            "ee3313f5c2d5d509cb7f61023484fcf7",
             "",
             "0780320450",
         ),
@@ -154,7 +154,7 @@ def test_main_group(janitor: list[str], runner: CliRunner) -> None:
         assert len(tof) == 52
         assert (
             get_md5(output_dir / "0780320450_20150624_144600_OD_OCT.DCM" / "metadata.json", bottom)
-            == "103860e71d8cf0e3cef29d5b8fa44739"
+            == "119d0b558164f6baa70b67831747fddc"
         )
         assert get_md5(of) in PNG_MD5S
         result = runner.invoke(app, args)
@@ -173,7 +173,7 @@ def test_main_dummy(janitor: list[str], runner: CliRunner) -> None:
     # one value only: input files are processed in sorted order, so the image order no longer depends on the filesystem
     assert (
         get_md5(Path("dummy_dir") / "123456__340692_OU_U.DCM" / "metadata.json", bottom)
-        == "c7ba10772ba3a04c18b1616c7bf3df92"
+        == "5129bbc8641ce674f37339bf2501e768"
     )
     assert get_md5(of) in [
         "fb7c7e0fe4e7d3e89e0daae479d013c4",  # macOS, Pillow < 12
@@ -232,11 +232,11 @@ def test_main_mapping_example_dir(janitor: list[str], runner: CliRunner) -> None
         assert len(of) == 264
         assert (
             get_md5(output_dir / "2910892726_20180724_161901_477b53_OS_OCT.DCM" / "metadata.json", bottom)
-            == "6b022a883bd309be2779a32d3dc4a994"
+            == "fb44929b50c8b8ed9732c8460476b47c"
         )
         assert (
             get_md5(output_dir / "3517807670_20180926_140517_600177_OD_OCT.DCM" / "metadata.json", bottom)
-            == "e921b5336d467eb82107bf4b5e4c6282"
+            == "726ba92fe21bfc28f2d0bfd508b8421f"
         )
         args = ["tests/example_dir", "-o", str(output_dir), "-j", "2", "-k", "nDg", "-m", "tests/map.csv"]
         # result = runner.invoke(app, args)
@@ -261,7 +261,7 @@ def test_main_optos_fa(janitor: list[str], runner: CliRunner) -> None:
         # the folder now carries the acquisition date: this Optos file stores it with a UTC offset (-0400)
         assert (
             get_md5(output_dir / "1840002001_20231013_112320_44fd1d_OD_OPTOS_FA.DCM" / "metadata.json", bottom)
-            == "f7d628532ddc8b4e3ff35d0a716fd9b1"
+            == "6db8437dfffe52f811389b88292136c4"
         )
 
 
@@ -294,7 +294,7 @@ def test_optomap(runner: CliRunner) -> None:
         ]
         assert (
             get_md5(output_dir / "252-1052_20250102_100023_4eb9d4_OS_PCUWF.DCM/metadata.json", bottom)
-            == "3d7ac9c2b41a55e720fad699e7958f01"
+            == "67d172019b2a669a733ce3868691c64f"
         )
 
 

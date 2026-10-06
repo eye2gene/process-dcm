@@ -18,7 +18,10 @@ from process_dcm.utils import (
     get_md5,
     get_versioned_filename,
     group_dcms_by_acquisition_time,
+    group_laterality,
+    group_scan_datetime,
     meta_images,
+    output_folder_for,
     process_and_save_csv,
     process_dcm,
     process_dcm_meta,
@@ -333,6 +336,56 @@ def test_group_by_acquisition_time_with_utc_offset(dicom_base: FileDataset) -> N
     assert len(next(iter(groups.values()))) == 2
 
 
+# --- issue #5: laterality and scan datetime belong to the image, a group may mix eyes and times ----------------
+
+
+def _mixed_group(dicom_base: FileDataset) -> list[FileDataset]:
+    """Two scans of the same group: right eye at 12:34:56, left eye earlier at 12:00:00."""
+    right, left = copy.deepcopy(dicom_base), copy.deepcopy(dicom_base)
+    right.ImageLaterality, right.AcquisitionDateTime = "R", "20260312123456.000"
+    left.ImageLaterality, left.AcquisitionDateTime = "L", "20260312120000.000"
+    return [right, left]
+
+
+def test_meta_images_laterality_and_scan_datetime(dicom_base: FileDataset) -> None:
+    """Each image entry records its own eye and acquisition time (parser 1.7.0)."""
+    dicom_base.ImageLaterality = "L"
+    dicom_base.AcquisitionDateTime = "20260312123456.789+0000"
+    meta = meta_images(dicom_base)
+    assert meta["laterality"] == "L"
+    assert meta["scan_datetime"] == "2026-03-12 12:34:56"
+
+
+def test_group_laterality_and_scan_datetime(dicom_base: FileDataset) -> None:
+    """A group mixing both eyes is 'B' and dated by its earliest scan; homogeneous groups keep their value."""
+    group = _mixed_group(dicom_base)
+    assert group_laterality(group) == "B"
+    assert group_scan_datetime(group) == "2026-03-12 12:00:00"
+    assert group_laterality(group[:1]) == "R"
+    assert group_laterality([dicom_base]) is None  # no laterality element at all
+    assert group_scan_datetime([dicom_base]) == ""
+
+
+def test_process_dcm_meta_mixed_laterality_group(dicom_base: FileDataset, tmp_path: Path) -> None:
+    """Per-image laterality and scan_datetime survive; series and exam carry the group summary."""
+    process_dcm_meta(_mixed_group(dicom_base), tmp_path, keep="p")
+    metadata = json.loads((tmp_path / "metadata.json").read_text())
+    images = metadata["images"]["images"]
+    assert [image["laterality"] for image in images] == ["R", "L"]
+    assert [image["scan_datetime"] for image in images] == ["2026-03-12 12:34:56", "2026-03-12 12:00:00"]
+    assert metadata["series"]["laterality"] == "B"
+    assert metadata["exam"]["scan_datetime"] == "2026-03-12 12:00:00"
+    assert metadata["parser_version"] == [1, 7, 0]
+
+
+def test_output_folder_for_mixed_laterality(dicom_base: FileDataset, tmp_path: Path) -> None:
+    """The flat folder name says OU when the group mixes eyes, OD/OS when it does not."""
+    group = _mixed_group(dicom_base)
+    assert output_folder_for(group, tmp_path).name.endswith("_OU_OCT.DCM")
+    assert output_folder_for(group[:1], tmp_path).name.endswith("_OD_OCT.DCM")
+    assert output_folder_for(group[1:], tmp_path).name.endswith("_OS_OCT.DCM")
+
+
 def test_process_dcm_meta_with_D_in_keep_and_mapping(dicom_base: FileDataset) -> None:
     # Call the function with "D" in keep
     with TemporaryDirectory() as tmpdir:
@@ -449,7 +502,7 @@ def test_process_dcm_dummy(temp_dir: str) -> None:
     assert new_old == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__340692_OU_U.DCM", "metadata.json"), bottom)
-        == "f830467715b41a882423c016e40a0da7"
+        == "1f563ded8e08ecc393d8967d72b75dbc"
     )
 
 
@@ -460,7 +513,7 @@ def test_process_dcm_dummy_group(temp_dir: str) -> None:
     assert new_old == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__OU_U.DCM", "metadata.json"), bottom)
-        == "f830467715b41a882423c016e40a0da7"
+        == "1f563ded8e08ecc393d8967d72b75dbc"
     )
 
 
@@ -471,7 +524,7 @@ def test_process_dcm_dummy_mapping(temp_dir: str) -> None:
     assert pair == [("2375458543", "123456")]
     assert (
         get_md5(os.path.join(temp_dir, "2375458543__340692_OU_U.DCM", "metadata.json"), bottom)
-        == "20c77ce55beb5ab8c8a0adf3f7be8778"
+        == "41f2cb2761853537ed6101fcca033da1"
     )
 
 

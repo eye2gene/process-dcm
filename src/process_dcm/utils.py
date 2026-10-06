@@ -129,6 +129,29 @@ def source_file_label(source: Path | str | None, input_path: Path | None, relati
     return os.path.relpath(str(source), os.getcwd())
 
 
+def image_laterality(dcm_obj: FileDataset) -> str | None:
+    """Return the eye an image belongs to (``ImageLaterality``, falling back to ``Laterality``), or None."""
+    return dcm_obj.get("ImageLaterality", dcm_obj.get("Laterality"))
+
+
+def image_scan_datetime(dcm_obj: FileDataset) -> str:
+    """Return the image's ``AcquisitionDateTime`` as ``YYYY-MM-DD HH:MM:SS``, or an empty string when unparseable."""
+    return do_date(dcm_obj.get("AcquisitionDateTime", "00000000"), "%Y%m%d%H%M%S.%f", "%Y-%m-%d %H:%M:%S")
+
+
+def group_laterality(dcm_objs: list[FileDataset]) -> str | None:
+    """Return the laterality shared by a group of images, ``B`` (both) when they mix eyes, None when unknown."""
+    values = {lat for dcm_obj in dcm_objs if (lat := image_laterality(dcm_obj)) is not None}
+    if not values:
+        return None
+    return values.pop() if len(values) == 1 else "B"
+
+
+def group_scan_datetime(dcm_objs: list[FileDataset]) -> str:
+    """Return the earliest known acquisition datetime of a group of images, or an empty string."""
+    return min((dt for dcm_obj in dcm_objs if (dt := image_scan_datetime(dcm_obj))), default="")
+
+
 def meta_images(dcm_obj: FileDataset, input_path: Path | None = None, relative_source_file: bool = False) -> dict:
     """Takes a DICOM file dataset and extracts metadata from it to create a dictionary of image metadata.
 
@@ -147,6 +170,9 @@ def meta_images(dcm_obj: FileDataset, input_path: Path | None = None, relative_s
     group = getattr(dcm_obj, "pdcm_group", 0)
     meta["modality"] = mod.value
     meta["group"] = group
+    # per image, because one DICOM group can hold scans of both eyes taken at different times (parser >= 1.7.0)
+    meta["laterality"] = image_laterality(dcm_obj)
+    meta["scan_datetime"] = image_scan_datetime(dcm_obj)
     meta["size"]["width"] = dcm_obj.get("Columns", 0)
     meta["size"]["height"] = dcm_obj.get("Rows", 0)
     meta["field_of_view"] = dcm_obj.get("HorizontalFieldOfView")
@@ -238,7 +264,7 @@ def process_dcm_meta(
     metadata["exam"] = {}
     metadata["series"] = {}
     metadata["images"]["images"] = []
-    metadata["parser_version"] = [1, 6, 0]  # pyright: ignore[reportArgumentType]
+    metadata["parser_version"] = [1, 7, 0]  # pyright: ignore[reportArgumentType]
     metadata["py_dcm_version"] = [int(x) for x in __version__.split(".") if x.isdigit()]  # pyright: ignore[reportArgumentType]
 
     keep_gender = "g" in keep
@@ -248,6 +274,10 @@ def process_dcm_meta(
     if anon_pat_key and mapping:
         study_2_patient = dict(read_csv(mapping))
         anon_pat_key = False
+
+    # group-level values: the images carry their own laterality and scan_datetime (issue #5)
+    series_laterality = group_laterality(dcm_objs)
+    exam_scan_datetime = group_scan_datetime(dcm_objs)
 
     for dcm_obj in dcm_objs:
         patient_key = dcm_obj.get("PatientID", "")
@@ -281,16 +311,14 @@ def process_dcm_meta(
         metadata["patient"]["source_id"] = dcm_obj.get("FrameOfReferenceUID")
 
         metadata["exam"]["manufacturer"] = dcm_obj.get("Manufacturer")
-        metadata["exam"]["scan_datetime"] = do_date(
-            dcm_obj.get("AcquisitionDateTime", "00000000"), "%Y%m%d%H%M%S.%f", "%Y-%m-%d %H:%M:%S"
-        )
+        metadata["exam"]["scan_datetime"] = exam_scan_datetime  # earliest in the group
         metadata["exam"]["scanner_model"] = dcm_obj.get("ManufacturerModelName")
         metadata["exam"]["scanner_serial_number"] = dcm_obj.get("DeviceSerialNumber")
         metadata["exam"]["scanner_software_version"] = str(dcm_obj.get("SoftwareVersions"))
         metadata["exam"]["scanner_last_calibration_date"] = ""
         metadata["exam"]["source_id"] = dcm_obj.get("FrameOfReferenceUID")
 
-        metadata["series"]["laterality"] = dcm_obj.get("ImageLaterality", dcm_obj.get("Laterality"))
+        metadata["series"]["laterality"] = series_laterality  # "B" when the group mixes both eyes
         metadata["series"]["fixation"] = ""
         aa = dcm_obj.get("AnatomicRegionSequence")
         if aa:
@@ -479,21 +507,22 @@ def group_dcms_by_acquisition_time(dcms: list[FileDataset], tol: float = 2) -> d
 
 
 def output_folder_for(
-    dcm_obj: FileDataset,
+    dcm_objs: list[FileDataset],
     output_dir: Path,
     time_group: bool = False,
     input_path: Path | None = None,
     preserve_folder_structure: bool = False,
     keep_dcm_name_as_folder: bool = True,
 ) -> Path:
-    """Return the folder that receives the images and metadata of the acquisition group ``dcm_obj`` belongs to.
+    """Return the folder that receives the images and metadata of an acquisition group.
 
-    The default (flat) layout is ``{output_dir}/{patient}_{date}_{time}[_{hash}]_{eye}_{modality}.DCM``. With
-    ``preserve_folder_structure`` the input tree is mirrored instead: ``{output_dir}/{relative folder}/{file stem}``,
-    or just ``{output_dir}/{relative folder}`` when ``keep_dcm_name_as_folder`` is off.
+    The default (flat) layout is ``{output_dir}/{patient}_{date}_{time}[_{hash}]_{eye}_{modality}.DCM``, where the
+    eye is ``OD``/``OS`` when the whole group agrees and ``OU`` otherwise. With ``preserve_folder_structure`` the input
+    tree is mirrored instead: ``{output_dir}/{relative folder}/{file stem}``, or just ``{output_dir}/{relative folder}``
+    when ``keep_dcm_name_as_folder`` is off.
 
     Args:
-        dcm_obj: The first DICOM of the group (its path and attributes name the folder).
+        dcm_objs: The DICOMs of the group, first one first (its path, patient, date and modality name the folder).
         output_dir: Root output directory.
         time_group: Whether groups were formed by acquisition time (no frame-reference hash in the name).
         input_path: The input file or folder given to process-dcm; required for ``preserve_folder_structure``.
@@ -503,6 +532,7 @@ def output_folder_for(
     Returns:
         The target folder (not created).
     """
+    dcm_obj = dcm_objs[0]
     if preserve_folder_structure and input_path is not None:
         relative = _relative_to_input(dcm_obj.pdcm_source, input_path)
         target_dir = output_dir / relative.parent
@@ -511,7 +541,7 @@ def output_folder_for(
     date_tag = do_date(dcm_obj.get("AcquisitionDateTime", "00000000"), "%Y%m%d%H%M%S.%f", "%Y%m%d_%H%M%S")
     if not time_group:
         date_tag = f"{date_tag}_{hex_hash(dcm_obj.get('FrameOfReferenceUID', '0'))}"
-    lat = dict_eye.get(dcm_obj.get("ImageLaterality", dcm_obj.get("Laterality")), "OU")
+    lat = dict_eye.get(group_laterality(dcm_objs), "OU")
     return output_dir / f"{dcm_obj.PatientID}_{date_tag}_{lat}_{dcm_obj.pdcm_modality.code}.DCM"
 
 
@@ -534,7 +564,7 @@ def process_dcm_images(
     See :func:`output_folder_for` for the folder layout options and :func:`process_dcm` for the other arguments.
     """
     target_dir = output_folder_for(
-        dcm_objs[0],
+        dcm_objs,
         output_dir,
         time_group=time_group,
         input_path=input_path,
