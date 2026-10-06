@@ -31,8 +31,6 @@ uvx process-dcm --help
 
  Process DICOM files in subfolders, extract images and metadata.
 
- Version: 0.10.0
-
 ╭─ Arguments ───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    input_path      <path>  Input path to either a DCM file or a folder containing DICOM files. [required]               │
 ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -208,7 +206,8 @@ This project uses [conventional commits](https://www.conventionalcommits.org/) a
    - Builds and publishes the package
 
 Never edit the version number by hand: it lives only in `pyproject.toml` and is read at runtime via
-`importlib.metadata` (`process_dcm.__version__`).
+`importlib.metadata` (`process_dcm.__version__`). `CHANGELOG.md` is regenerated at every release, so don't edit it
+either; the changelog kept by commitizen up to v0.10.0 is preserved in [CHANGELOG-pre-1.0.0.md](CHANGELOG-pre-1.0.0.md).
 
 ## Publishing to PyPI
 
