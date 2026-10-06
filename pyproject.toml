@@ -10,7 +10,7 @@ authors = [
   { name = "Eye2Gene", email = "dev@eye2gene.com" },
 ]
 maintainers = [{ name = "Eye2Gene", email = "dev@eye2gene.com" }]
-keywords = ["dicom", "ophthalmology", "oct", "image-extraction", "metadata"]
+keywords = ["dicom", "image-extraction", "metadata", "oct", "ophthalmology"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Environment :: Console",
@@ -71,7 +71,7 @@ build-backend = "uv_build"
 
 [tool.coverage.report]
 omit = ["__main__.py"]
-fail_under = 50  # minimum coverage required, but aim for 100% though
+fail_under = 90  # minimum coverage required, but aim for 100% though
 exclude_also = [
   "if TYPE_CHECKING:",
   "if typing.TYPE_CHECKING:",
@@ -137,6 +137,11 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): {version}"
+
 [tool.ty]
 # All rules are enabled as "error" by default; no need to specify unless overriding.
 
@@ -153,12 +158,4 @@ error-on-warning = true
 exclude-newer = "7 days"
 package = true
 default-groups = ["dev"]
-cache-keys = [
-  { file = "pyproject.toml" },
-  { git = { commit = true, tags = true } }
-]
-
-[tool.semantic_release]
-version_toml = ["pyproject.toml:project.version"]
-branch = "main"
-commit_message = "chore(release): {version}"
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
