@@ -1,14 +1,18 @@
 # Process DCM
 
-[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=plastic)](https://github.com/eye2Gene/process-dcm/graphs/commit-activity)
-[![GitHub](https://img.shields.io/github/license/eye2Gene/process-dcm?style=plastic)](https://github.com/eye2Gene/process-dcm)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/eye2Gene/process-dcm?display_name=tag&logo=github&style=plastic)](https://github.com/eye2Gene/process-dcm/releases)
-[![GitHub Release](https://img.shields.io/github/release-date/eye2Gene/process-dcm?style=plastic&logo=github)](https://github.com/eye2Gene/process-dcm/releases)
-[![PyPI](https://img.shields.io/pypi/v/process-dcm?style=plastic&logo=pypi)](https://pypi.org/project/process-dcm/)
-[![Python](https://img.shields.io/pypi/pyversions/process-dcm?style=plastic&logo=python)](https://pypi.org/project/process-dcm/)
-[![uv](https://img.shields.io/endpoint?style=plastic&url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-[![Ruff](https://img.shields.io/endpoint?style=plastic&url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![ty](https://img.shields.io/endpoint?style=plastic&url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/eye2Gene/process-dcm/graphs/commit-activity)
+[![Python](https://img.shields.io/pypi/pyversions/process-dcm?logo=python&logoColor=white)](https://pypi.org/project/process-dcm/)
+[![Coverage](./assets/coverage.svg)](https://github.com/eye2Gene/process-dcm)
+[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![ty](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ty/main/assets/badge/v0.json)](https://github.com/astral-sh/ty)
+[![just](https://img.shields.io/badge/just-command%20runner-black?logo=just&logoColor=white)](https://github.com/casey/just)
+[![semantic-release](https://img.shields.io/badge/release-semantic--release-e10079?logo=semantic-release&logoColor=white)](https://python-semantic-release.readthedocs.io/)
+[![PyPI](https://img.shields.io/pypi/v/process-dcm?logo=pypi&logoColor=white)](https://pypi.org/project/process-dcm/)
+[![GitHub release](https://img.shields.io/github/v/release/eye2Gene/process-dcm?display_name=tag&logo=github)](https://github.com/eye2Gene/process-dcm/releases)
+[![GitHub release date](https://img.shields.io/github/release-date/eye2Gene/process-dcm?logo=github)](https://github.com/eye2Gene/process-dcm/releases)
+[![License](https://img.shields.io/github/license/eye2Gene/process-dcm)](LICENSE)
+[![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
 
 ## About The Project
 

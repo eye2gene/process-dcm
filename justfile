@@ -53,10 +53,10 @@ test *ARGS:
     uv run pytest {{ ARGS }}
     @echo "See htmlcov/index.html for detailed coverage report"
 
-# Run all the tests, but on failure, drop into the debugger (xdist disabled: --pdb needs a single process)
+# Run all the tests, but on failure, drop into the debugger (sequential: -n0 required for pdb)
 pdb *ARGS:
     @echo "Running with arg: {{ ARGS }}"
-    uv run pytest --pdb --maxfail=10 -n 0 {{ ARGS }}
+    uv run pytest --pdb --maxfail=10 -n0 {{ ARGS }}
 
 # Build the project, useful for checking that packaging is correct
 build:

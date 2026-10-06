@@ -1,7 +1,10 @@
 name: CI
 
+# Runs on pull requests and on pushes to non-main branches.
+# Pushes to main are covered by the CI job inside release.yml, which gates the release.
 on:
   push:
+    branches-ignore: [main]
     paths:
       - "src/**"
       - "tests/**"

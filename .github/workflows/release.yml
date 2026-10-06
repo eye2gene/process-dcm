@@ -15,9 +15,48 @@ jobs:
       # process-dcm supports 3.11+ (the reusable default is 3.12/3.13 only)
       python-versions: '["3.11", "3.12", "3.13"]'
 
-  release:
+  coverage-badge:
     runs-on: ubuntu-latest
     needs: [ci]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@main
+
+      # The ci job already produced coverage.xml and uploaded it as an artifact, so
+      # pull it here instead of re-running the suite, then render it to a
+      # self-contained SVG committed into the repo. The README references
+      # assets/coverage.svg by relative path so it renders for anyone who can see
+      # the repo, without a third party.
+      - name: Download coverage report
+        uses: actions/download-artifact@v5
+        with:
+          name: coverage-3.12
+
+      - name: Render coverage badge
+        run: |
+          mkdir -p assets
+          uvx --from "genbadge[coverage]" genbadge coverage -i coverage.xml -o assets/coverage.svg -s
+
+      - name: Commit coverage badge if it changed
+        run: |
+          if git diff --quiet -- assets/coverage.svg; then
+            echo "Coverage badge unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/coverage.svg
+          git commit -m "chore: update coverage badge [skip ci]"
+          git push
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [ci, coverage-badge]
     concurrency:
       group: release
       cancel-in-progress: false
