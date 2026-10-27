@@ -445,6 +445,28 @@ def audit_fix(audit: dict[str, object], package: str) -> tuple[str, str] | None:
     return chosen, ", ".join(sorted(set(advisories)))
 
 
+def run_audit() -> dict[str, object]:
+    """Return the ``uv audit`` report for the project in the current directory.
+
+    A report counts whatever the exit code, since findings make it non-zero; no report means the audit failed (no
+    network, a broken lock), and an empty one would let ``allow`` go on without the fixes it widens the cutoff over.
+    """
+    audit = subprocess.run(
+        ["uv", "audit", "--output-format", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        report = json.loads(audit.stdout)
+    except json.JSONDecodeError:
+        report = None
+    if not isinstance(report, dict) or not isinstance(report.get("vulnerabilities"), list):
+        detail = audit.stderr.strip().splitlines()[-1] if audit.stderr.strip() else f"exit {audit.returncode}"
+        raise SystemExit(f"uv audit failed, so `allow` cannot see the fixes it reports: {detail}")
+    return report
+
+
 def fixes_ahead(audit: dict[str, object], package: str) -> list[str]:
     """Return every fix the ``uv audit`` findings for ``package`` name at or above the version each found, oldest first.
 
@@ -644,24 +666,18 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
     """Open a pull request that lists a security fix on e2g-workflows, auto-merged when the repository allows it."""
     package = normalize(package_arg)
     gh("auth", "status")
-    others: list[str] = []
+    report = run_audit()
     if version_arg:
         version, advisory = version_arg, ""
     else:
-        audit = subprocess.run(
-            ["uv", "audit", "--output-format", "json"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        report = json.loads(audit.stdout or "{}")
         fix = audit_fix(report, package)
         if fix is None:
             raise SystemExit(
                 f"uv audit reports no fix for {package}: name the version, `just allow {package} <version>`"
             )
         version, advisory = fix
-        others = [each for each in fixes_ahead(report, package) if each != version]
+    # A named version gets the same widening: the audit's other fixes for the package, if it reports any.
+    others = [each for each in fixes_ahead(report, package) if each != version]
     cutoff = release_cutoff(package, version)
     # A cutoff that admits only the chosen fix can admit a newer, still vulnerable release of another branch (with
     # 4.2.25 locked, 4.2.26's cutoff may let 5.2.7 in when 5.2.8 came later), and `uv lock -U` would take it. So the
