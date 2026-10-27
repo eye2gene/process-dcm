@@ -53,6 +53,15 @@ up *ARGS:
 allow PACKAGE VERSION="":
     uv run --no-project scripts/quarantine.py allow {{ PACKAGE }} {{ VERSION }}
 
+# The two hooks of python-ci.yml (e2g-workflows), run in CI only when defined: `ci-setup` in the test job once the
+# project is installed, before the tests (GH_TOKEN is set), and `ci-check` in the build job after `just build`.
+# Uncomment and fill in what the tests or the built wheels need there; the same recipes run locally. What the runner
+# itself must provide (submodules, LFS, Debian packages, bun) are inputs of the workflow: see .github/workflows/ci.yml.
+# ci-setup:
+#     grep -qs '^[[:space:]]*\[profile ucl\]' ~/.aws/config || { mkdir -p ~/.aws && printf '\n[profile ucl]\nregion = eu-west-2\n' >> ~/.aws/config; }
+# ci-check:
+#     uv run just smoke
+
 # Run all the tests, but allow for arguments to be passed. Coverage is measured on src/ and tests/, so the report
 # lists test code that never ran, but the floor (fail_under in pyproject.toml) applies to src/ alone
 test *ARGS:

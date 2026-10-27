@@ -338,6 +338,29 @@ def write_user_config(exceptions: dict[str, datetime | None]) -> Path:
     return path
 
 
+def user_exceptions() -> dict[str, datetime | None]:
+    """Return the exceptions of the managed block in the user-level uv configuration, empty when there is none."""
+    path = user_config_path()
+    if not path.is_file():
+        return {}
+    match = _BLOCK.search(path.read_text())
+    if match is None:
+        return {}
+    body = "\n".join(line for line in match.group(0).splitlines() if not line.startswith("#"))
+    try:
+        table = tomllib.loads(body).get("exclude-newer-package")
+    except tomllib.TOMLDecodeError:
+        return {}
+    if not isinstance(table, dict):
+        return {}
+    return {
+        normalize(name): (
+            None if value is False else parse_timestamp(value, what=f"{path} exclude-newer-package {name}")
+        )
+        for name, value in table.items()
+    }
+
+
 def pypi_cutoff(release: dict[str, object]) -> datetime:
     """Return one minute after the last file of a PyPI release was uploaded, so every file of that version resolves."""
     urls = release.get("urls")
@@ -468,16 +491,13 @@ def run_audit() -> dict[str, object]:
 
 
 def fixes_ahead(audit: dict[str, object], package: str) -> list[str]:
-    """Return every fix the ``uv audit`` findings for ``package`` name at or above the version each found, oldest first.
+    """Return every fix the ``uv audit`` findings for ``package`` name, on any maintenance branch, oldest first.
 
-    These are the releases ``uv lock -U`` may move to, one per maintenance branch the constraints could allow; with
-    4.2.25 and 5.2.7 both locked, 4.2.26 is one of them as much as 5.2.8.
+    The exception they widen is shared by every Eye2Gene project, so a fix below this project's locked version counts
+    too: with 5.2.7 locked here, 4.2.26 is what a project on 4.2.x needs, and its cutoff must let it in as well.
     """
     found, _ = _findings(audit, package)
-    return sorted(
-        {fix for fixes, locked in found for fix in fixes if locked is None or version_key(fix) >= locked},
-        key=version_key,
-    )
+    return sorted({fix for fixes, _ in found for fix in fixes}, key=version_key)
 
 
 def render_entry(entry: Entry) -> str:
@@ -593,18 +613,32 @@ def cmd_sync(now: datetime) -> int:
 
 
 def cmd_from_lock() -> int:
-    """Write the exceptions ``uv.lock`` records to the user-level uv configuration, so a re-lock keeps them.
+    """Add the exceptions ``uv.lock`` records to the user-level uv configuration, so a re-lock keeps them.
 
     For environments that re-lock a lock CI has already validated and that cannot reach the shared list: the
-    semantic-release container, whose ``build_command`` bumps the version in the lock, and the build step after it.
+    semantic-release container, whose ``build_command`` bumps the version in the lock, and the build step after it;
+    also the first ``uv sync`` of a fresh clone. The lock's entries are added to the managed block, never put in its
+    place: on a developer's machine that block holds the shared list, which the locks of the other projects rely on,
+    and a lock from an older checkout must not drop what they need. A package in both takes the later cutoff.
     """
     lock_path = Path("uv.lock")
     lock = lock_exceptions(lock_path.read_text()) if lock_path.is_file() else {}
-    path = write_user_config(lock)
     if not lock:
-        print(f"uv.lock records no quarantine exceptions: {path} holds none")
+        print(f"uv.lock records no quarantine exceptions: {user_config_path()} is left as it is")
         return 0
-    print(f"{len(lock)} quarantine exception(s) of uv.lock written to {path}: {', '.join(lock)}")
+    merged = user_exceptions()
+    kept = [name for name in merged if name not in lock]
+    for name, cutoff in lock.items():
+        if name in merged:
+            current = merged[name]
+            merged[name] = None if current is None or cutoff is None else max(current, cutoff)
+        else:
+            merged[name] = cutoff
+    path = write_user_config(merged)
+    print(
+        f"{len(lock)} quarantine exception(s) of uv.lock written to {path}: {', '.join(lock)}"
+        + (f"; kept, from the shared list or another project's lock: {', '.join(kept)}" if kept else "")
+    )
     return 0
 
 
@@ -681,7 +715,8 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
     cutoff = release_cutoff(package, version)
     # A cutoff that admits only the chosen fix can admit a newer, still vulnerable release of another branch (with
     # 4.2.25 locked, 4.2.26's cutoff may let 5.2.7 in when 5.2.8 came later), and `uv lock -U` would take it. So the
-    # cutoff covers every fix at or above the locked version: on whichever branch the constraints allow, its fix is in.
+    # cutoff covers every fix the findings name, on any branch: the exception is shared by every project, each on its
+    # own branch, and whichever branch the constraints allow, its fix is in.
     latest = version
     for other in others:
         try:

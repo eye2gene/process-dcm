@@ -141,7 +141,7 @@ process-dcm/
 
 **Key files:**
 
-- **`.github/workflows/`** — CI calls the shared [e2g-workflows](https://github.com/eye2Gene/e2g-workflows) reusable workflow. CI logic is centralised there.
+- **`.github/workflows/`** — CI calls the shared [e2g-workflows](https://github.com/eye2Gene/e2g-workflows) reusable workflow. CI logic is centralised there. What this project needs on top goes through the workflow's inputs (`with:` in `ci.yml`: its Python versions), the justfile's `ci-setup` and `ci-check` recipes, or a job of its own next to the call, never a copy of the workflow's jobs. See e2g-workflows' README, "Extending python-ci.yml".
 - **`.kiro/steering/`** — The AI rules (Python style, commit messages, command safety, supply-chain safety), loaded automatically by Kiro.
 - **`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`** — The same rules for Claude Code, for Codex and Copilot's coding agent, and for Copilot chat and code review. They come from the template: change them there and run `cruft update`. `CLAUDE.md` also carries project-specific notes.
 - **`.vscode/`** — Shared editor settings (Ruff format-on-save, pytest discovery, recommended extensions). Works in VS Code and Kiro out of the box.
