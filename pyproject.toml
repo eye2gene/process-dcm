@@ -22,6 +22,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Medical Science Apps.",
   "Typing :: Typed",
 ]
@@ -51,6 +52,8 @@ dev = [
   { include-group = "test" },
   { include-group = "tools" },
 ]
+# The coverage badge renderer, run by release.yml's coverage-badge job from the lock (`uv run --only-group badge`)
+badge = ["genbadge[coverage]"]
 lint = [
   "licensecheck; python_version >= '3.12'",  # needs 3.12+, dev tool only
   "ruff",
@@ -65,8 +68,6 @@ test = [
   "ty",
 ]
 tools = ["cruft", "rust-just"]
-# The coverage badge renderer, run by release.yml's coverage-badge job from the lock (`uv run --only-group badge`)
-badge = ["genbadge[coverage]"]
 
 [build-system]
 requires = ["uv_build>=0.9.0,<1.0"]
@@ -147,8 +148,10 @@ commit_message = "chore(release): {version}"
 # Put the new version in uv.lock too, inside the release commit. It runs in the semantic-release action's
 # container, which has no uv: release.yml copies the job's own uv (from setup-uv) into .release-tools/ for it, so
 # nothing is installed from PyPI. `set -eu` (the container's shell is sh) aborts the release if the lock fails.
+# `from-lock` first gives this container's uv the quarantine exceptions the lock records, or the re-lock drops them.
 build_command = """
     set -eu
+    python3 scripts/quarantine.py from-lock
     .release-tools/uv lock --upgrade-package "$PACKAGE_NAME"
     git add uv.lock
 """
@@ -171,7 +174,6 @@ error-on-warning = true
 [tool.uv]
 required-version = ">=0.12,<1.0"
 exclude-newer = "7 days"
-exclude-newer-package = { certifi = "2026-10-21T00:00:00Z", pillow = "2026-10-17T00:00:00Z" }  # certifi: PYSEC-2026-4320 fix, drop it after 2026-10-27; pillow: 13.0.0 fixes 28 advisories of 12.3.0 (GHSA-w889-685w-c8fh and more), drop it after 2026-10-24
 package = true
 default-groups = ["dev"]
 cache-keys = [
