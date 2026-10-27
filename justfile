@@ -37,7 +37,7 @@ license-check:
 # Run the formatting, linting, type checking and tests commands
 qa-all:
     just qa
-    uv run pytest
+    just test
 
 # Upgrade the project library and build it, with the quarantine exceptions shared by every Eye2Gene project
 up *ARGS:
