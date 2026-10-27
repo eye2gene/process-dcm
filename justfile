@@ -37,15 +37,21 @@ license-check:
 # Run the formatting, linting, type checking and tests commands
 qa-all:
     just qa
-    uv run pytest
+    just test
 
-# Upgrade the project library and build it
+# Upgrade the project library and build it, with the quarantine exceptions shared by every Eye2Gene project
 up *ARGS:
     @echo "Upgrading with {{ ARGS }}"
+    uv run --no-project scripts/quarantine.py sync
     uv lock --exclude-newer "7 days" -U {{ ARGS }}
+    uv run --no-project scripts/quarantine.py check
     uv audit
     uv sync --exclude-newer "7 days" --all-extras
     just build
+
+# Let a security fix in before its 7-day quarantine ends, for every Eye2Gene project: opens a PR to e2g-workflows; once it is merged, `just up`
+allow PACKAGE VERSION="":
+    uv run --no-project scripts/quarantine.py allow {{ PACKAGE }} {{ VERSION }}
 
 # Run all the tests, but allow for arguments to be passed. Coverage is measured on src/ and tests/, so the report
 # lists test code that never ran, but the floor (fail_under in pyproject.toml) applies to src/ alone

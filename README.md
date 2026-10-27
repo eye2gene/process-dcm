@@ -114,6 +114,8 @@ process-dcm/
 ├── .vscode/
 │   ├── extensions.json         # Recommended VS Code/Kiro extensions
 │   └── settings.json           # Editor settings (Ruff, pytest, etc.)
+├── scripts/
+│   └── quarantine.py           # just up / just allow: the quarantine exceptions shared org-wide
 ├── src/
 │   └── process_dcm/
 │       ├── __init__.py         # Package version via importlib.metadata
@@ -162,11 +164,15 @@ uv venv
 # Activate the virtual environment
 source .venv/bin/activate
 
+# Let uv accept the quarantine exceptions uv.lock records (see "Upgrade the dependencies");
+# without it, the first sync re-locks without them and rewrites uv.lock
+uv run --no-project scripts/quarantine.py from-lock
+
 # Install the project (editable) and all dev dependency groups
 uv sync
 ```
 
-Python 3.11 is the minimum supported version; development and CI default to 3.12, and CI also tests 3.11 and 3.13.
+Python 3.11 is the minimum supported version; development and CI default to 3.12, and CI also tests 3.11, 3.13 and 3.14.
 
 Run tests (parallel, with coverage):
 
@@ -183,6 +189,21 @@ just qa       # fixes what it can
 just ci       # check only, what CI runs
 just qa-all   # qa + tests
 ```
+
+Upgrade the dependencies:
+
+```bash
+just up
+```
+
+Dependencies are locked with a 7-day quarantine: a PyPI release is ignored until it is 7 days old. When `uv audit` reports a vulnerability whose fix is younger than that, let that one fix in early, for every Eye2Gene project at once:
+
+```bash
+just allow setuptools          # the version uv audit names as the fix
+just allow setuptools 84.1.0   # or a given one
+```
+
+It opens a pull request that lists the fix in [`quarantine-exceptions.toml`](https://github.com/eye2Gene/e2g-workflows/blob/main/quarantine-exceptions.toml) of e2g-workflows and prints its URL; merge it there (or let auto-merge do it, once that repository enables it), then run `just up`. `just up` writes the list's active entries to your user-level uv configuration (`~/.config/uv/uv.toml`) before locking, so a fix listed by anyone reaches every project on its next `just up`, and CI refuses a `uv.lock` that lets a package in early without such an entry. Both need the GitHub CLI logged in (`gh auth login`). An entry expires 7 days after the fix was uploaded; the next `just up` drops the pin.
 
 ### Test data
 

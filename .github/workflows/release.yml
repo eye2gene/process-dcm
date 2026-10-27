@@ -12,8 +12,8 @@ jobs:
   ci:
     uses: eye2Gene/e2g-workflows/.github/workflows/python-ci.yml@main
     with:
-      # process-dcm supports 3.11+ (the reusable default is 3.12/3.13 only)
-      python-versions: '["3.11", "3.12", "3.13"]'
+      # process-dcm supports 3.11+ (the reusable default starts at 3.12)
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
 
   release:
     runs-on: ubuntu-latest
@@ -43,6 +43,11 @@ jobs:
       # this copy of the job's uv, so nothing is installed from PyPI for the release
       - name: Hand the job's uv to semantic-release
         run: install -D -m 0755 "$(command -v uv)" .release-tools/uv
+
+      # The lock may admit quarantine exceptions (scripts/quarantine.py); the release re-locks, so uv must see them
+      # here, for the build step, and inside the semantic-release container, where build_command runs the same command
+      - name: Keep the quarantine exceptions of uv.lock through the release
+        run: python3 scripts/quarantine.py from-lock
 
       - name: Python Semantic Release
         id: release
