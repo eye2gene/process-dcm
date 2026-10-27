@@ -1,6 +1,6 @@
 {
   "template": "https://github.com/eye2Gene/e2g-pypkg",
-  "commit": "8c70ce9c82cf561f734d07fd22af88dc81b5a6da",
+  "commit": "2cd905c4f28784249dcabcaa7d6eacd9f44f2124",
   "skip": [
     "LICENSE",
     "tests/test_process_dcm.py"
@@ -18,7 +18,7 @@
         "scripts/quarantine.py"
       ],
       "_template": "https://github.com/eye2Gene/e2g-pypkg",
-      "_commit": "8c70ce9c82cf561f734d07fd22af88dc81b5a6da"
+      "_commit": "2cd905c4f28784249dcabcaa7d6eacd9f44f2124"
     }
   },
   "checkout": null

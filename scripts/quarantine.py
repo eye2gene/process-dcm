@@ -90,6 +90,10 @@ class GhError(Exception):
     """The GitHub CLI failed for a reason other than authentication."""
 
 
+class MissingRelease(SystemExit):
+    """PyPI answered that the release does not exist, or that it has no files: not a failed lookup."""
+
+
 def normalize(name: str) -> str:
     """Return a package name as uv and PyPI write it: lower case, runs of ``-``, ``_`` and ``.`` as one ``-``."""
     return re.sub(r"[-_.]+", "-", name).lower()
@@ -343,8 +347,22 @@ def pypi_cutoff(release: dict[str, object]) -> datetime:
         if isinstance(file, dict)
     ]
     if not uploads:
-        raise SystemExit("PyPI lists no files for that release")
+        raise MissingRelease("PyPI lists no files for that release")
     return (max(uploads) + timedelta(minutes=1)).replace(microsecond=0)
+
+
+def release_cutoff(package: str, version: str) -> datetime:
+    """Return the cutoff that admits every file of ``package`` ``version``, read from PyPI.
+
+    Raises ``MissingRelease`` only when PyPI says the release is not there; any other failure stops the script.
+    """
+    try:
+        release = json.loads(fetch_text(PYPI_URL.format(package=package, version=version)))
+    except MissingRelease as exc:
+        raise MissingRelease(f"PyPI has no {package} {version}: {exc}") from exc
+    except SystemExit as exc:
+        raise SystemExit(f"could not read {package} {version} from PyPI: {exc}") from exc
+    return pypi_cutoff(release)
 
 
 def fixed_by(candidate: str, fixes: list[str]) -> bool:
@@ -380,11 +398,14 @@ def fixed_by(candidate: str, fixes: list[str]) -> bool:
         group, depth = same, split + 1
 
 
-def audit_fix(audit: dict[str, object], package: str) -> tuple[str, str] | None:
-    """Return the lowest version at or above the locked one that fixes every ``uv audit`` finding for ``package``, with the advisory IDs."""
-    findings: list[list[str]] = []
+def _findings(audit: dict[str, object], package: str) -> tuple[list[tuple[list[str], VersionKey | None]], list[str]]:
+    """Return the fixes each ``uv audit`` finding for ``package`` names with the version it found, and the advisory IDs.
+
+    A lock can hold several versions of one package (one per Python version or platform fork), so each finding keeps
+    its own.
+    """
+    findings: list[tuple[list[str], VersionKey | None]] = []
     advisories: list[str] = []
-    locked: VersionKey | None = None
     vulnerabilities = audit.get("vulnerabilities")
     for vulnerability in vulnerabilities if isinstance(vulnerabilities, list) else []:
         if not isinstance(vulnerability, dict):
@@ -397,12 +418,18 @@ def audit_fix(audit: dict[str, object], package: str) -> tuple[str, str] | None:
         if not fixes:
             continue
         locked_version = str(dependency.get("version", ""))
-        if locked_version:
-            locked = max(locked, version_key(locked_version)) if locked else version_key(locked_version)
-        findings.append(fixes)
+        findings.append((fixes, version_key(locked_version) if locked_version else None))
         advisories.append(str(vulnerability.get("id", "")))
-    if not findings:
+    return findings, advisories
+
+
+def audit_fix(audit: dict[str, object], package: str) -> tuple[str, str] | None:
+    """Return the lowest version at or above the locked one that fixes every ``uv audit`` finding for ``package``, with the advisory IDs."""
+    found, advisories = _findings(audit, package)
+    if not found:
         return None
+    findings = [fixes for fixes, _ in found]
+    locked = max((each for _, each in found if each is not None), default=None)
     # The lowest release at or above the locked version that carries a fix for every finding; when no single
     # release does (or the audit's fixes are all below the locked version), the newest fix named.
     candidates = sorted(
@@ -416,6 +443,19 @@ def audit_fix(audit: dict[str, object], package: str) -> tuple[str, str] | None:
     if chosen is None:
         chosen = max((fix for fixes in findings for fix in fixes), key=version_key)
     return chosen, ", ".join(sorted(set(advisories)))
+
+
+def fixes_ahead(audit: dict[str, object], package: str) -> list[str]:
+    """Return every fix the ``uv audit`` findings for ``package`` name at or above the version each found, oldest first.
+
+    These are the releases ``uv lock -U`` may move to, one per maintenance branch the constraints could allow; with
+    4.2.25 and 5.2.7 both locked, 4.2.26 is one of them as much as 5.2.8.
+    """
+    found, _ = _findings(audit, package)
+    return sorted(
+        {fix for fixes, locked in found for fix in fixes if locked is None or version_key(fix) >= locked},
+        key=version_key,
+    )
 
 
 def render_entry(entry: Entry) -> str:
@@ -449,9 +489,16 @@ def describe_expired(name: str, cutoff: datetime, entry: Entry | None, days: int
 
 
 def updated_list(text: str, policy: Policy, entry: Entry, now: datetime) -> str:
-    """Return the list with ``entry`` appended and the expired entries pruned; the header and [policy] stay as written."""
+    """Return the list with ``entry`` appended and the expired entries pruned; the header and [policy] stay as written.
+
+    An entry for the same package and version, which ``entry`` widens, goes too: the list holds one per pair.
+    """
     head, _, _ = text.partition("\n[[exception]]\n")
-    kept = [old for old in policy.entries if now < old.expires(policy.quarantine_days)]
+    kept = [
+        old
+        for old in policy.entries
+        if now < old.expires(policy.quarantine_days) and (old.package, old.version) != (entry.package, entry.version)
+    ]
     return head.rstrip("\n") + "\n" + "".join(render_entry(each) for each in [*kept, entry])
 
 
@@ -461,6 +508,10 @@ def fetch_text(source: str) -> str:
         try:
             with urllib.request.urlopen(source, timeout=30) as response:  # noqa: S310 - https only, checked above
                 return response.read().decode()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                raise MissingRelease(f"{source} was not found") from exc
+            raise SystemExit(f"could not fetch {source}: {exc}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise SystemExit(f"could not fetch {source}: {exc}") from exc
     path = Path(source)
@@ -593,6 +644,7 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
     """Open a pull request that lists a security fix on e2g-workflows, auto-merged when the repository allows it."""
     package = normalize(package_arg)
     gh("auth", "status")
+    others: list[str] = []
     if version_arg:
         version, advisory = version_arg, ""
     else:
@@ -602,25 +654,36 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
             text=True,
             check=False,
         )
-        fix = audit_fix(json.loads(audit.stdout or "{}"), package)
+        report = json.loads(audit.stdout or "{}")
+        fix = audit_fix(report, package)
         if fix is None:
             raise SystemExit(
                 f"uv audit reports no fix for {package}: name the version, `just allow {package} <version>`"
             )
         version, advisory = fix
-    try:
-        release = json.loads(fetch_text(PYPI_URL.format(package=package, version=version)))
-    except SystemExit as exc:
-        raise SystemExit(f"PyPI has no {package} {version}: {exc}") from exc
-    cutoff = pypi_cutoff(release)
+        others = [each for each in fixes_ahead(report, package) if each != version]
+    cutoff = release_cutoff(package, version)
+    # A cutoff that admits only the chosen fix can admit a newer, still vulnerable release of another branch (with
+    # 4.2.25 locked, 4.2.26's cutoff may let 5.2.7 in when 5.2.8 came later), and `uv lock -U` would take it. So the
+    # cutoff covers every fix at or above the locked version: on whichever branch the constraints allow, its fix is in.
+    latest = version
+    for other in others:
+        try:
+            other_cutoff = release_cutoff(package, other)
+        except MissingRelease:
+            continue  # a fix the advisory names that PyPI does not have (yet); a failed lookup stops instead
+        if other_cutoff > cutoff:
+            cutoff, latest = other_cutoff, other
     text, sha = fetch_list()
     policy = load_policy(text)
     expires = cutoff + timedelta(days=policy.quarantine_days)
     if now >= expires:
         print(f"{package} {version} left quarantine on {expires:%Y-%m-%d}: `just up` takes it without an exception")
         return 0
+    # Listed already only when that entry's cutoff covers this one: a narrower one (from before a later branch's fix
+    # was out) is replaced by a wider entry.
     for entry in policy.entries:
-        if entry.package == package and entry.version == version:
+        if entry.package == package and entry.version == version and entry.cutoff >= cutoff:
             print(f"{package} {version} is already listed by {entry.by} on {entry.added}: `just up` takes it")
             return 0
     if not sha:
@@ -636,13 +699,24 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
     new_text = updated_list(text, policy, entry, now)
     load_policy(new_text)
     pruned = [old for old in policy.entries if now >= old.expires(policy.quarantine_days)]
+    replaced = [old for old in policy.entries if (old.package, old.version) == (package, version) and old not in pruned]
     message = f"chore(quarantine): allow {package} {version}" + (f" for {advisory}" if advisory else "")
     body = (
         f"Lets `{package}` releases uploaded up to {format_timestamp(cutoff)} resolve before the "
         f"{policy.quarantine_days}-day quarantine ends, so every project can take {version}"
         + (f", which fixes {advisory}" if advisory else "")
+        + (
+            f"; the cutoff also admits {latest}, the last fix uploaded, so a project on another branch gets its own"
+            if latest != version
+            else ""
+        )
         + f".\n\nThe entry expires on {expires:%Y-%m-%d}; the next `just up` of each project drops it then, "
         "and the next `just allow` prunes it from the list.\n\n"
+        + "".join(
+            f"Replaces the entry of {old.added} by {old.by}, whose cutoff "
+            f"({format_timestamp(old.cutoff)}) left out a later fix.\n\n"
+            for old in replaced
+        )
         + (
             "Pruned, expired: " + ", ".join(f"{old.package} {old.version}" for old in pruned) + ".\n\n"
             if pruned
