@@ -164,11 +164,15 @@ uv venv
 # Activate the virtual environment
 source .venv/bin/activate
 
+# Let uv accept the quarantine exceptions uv.lock records (see "Upgrade the dependencies");
+# without it, the first sync re-locks without them and rewrites uv.lock
+uv run --no-project scripts/quarantine.py from-lock
+
 # Install the project (editable) and all dev dependency groups
 uv sync
 ```
 
-Python 3.11 is the minimum supported version; development and CI default to 3.12, and CI also tests 3.11 and 3.13.
+Python 3.11 is the minimum supported version; development and CI default to 3.12, and CI also tests 3.11, 3.13 and 3.14.
 
 Run tests (parallel, with coverage):
 
