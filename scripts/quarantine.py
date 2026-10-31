@@ -15,9 +15,11 @@ adds one, and the pull requests and git history keep the record.
 
 Run it through the justfile: ``just up`` (sync, lock, check, audit) and ``just allow <package> [<version>]``, which
 opens a pull request listing the fix on e2g-workflows and arms auto-merge when that repository allows it; once the
-pull request is merged, ``just up``. ``from-lock`` serves the release: the semantic-release container and the build
-step re-lock without reaching the list, so they take the exceptions from the lock CI validated. The script needs only
-the standard library, so ``uv run --no-project scripts/quarantine.py`` runs it without touching the project's lock.
+pull request is merged, ``just up``. Every entry says why it skips the quarantine: the advisories the audit reports,
+whose fixes a named version must carry, or ``--advisory`` when the audit reports nothing for the package.
+``from-lock`` serves the release: the semantic-release container and the build step re-lock without reaching the
+list, so they take the exceptions from the lock CI validated. The script needs only the standard library, so
+``uv run --no-project scripts/quarantine.py`` runs it without touching the project's lock.
 """
 
 import argparse
@@ -49,6 +51,9 @@ _BLOCK = re.compile(
     rf"^{re.escape(BLOCK_BEGIN)}\n.*?^{re.escape(BLOCK_END)}\n?",
     re.MULTILINE | re.DOTALL,
 )
+# The first exception table of the list, however its header line is spaced, commented or ended (CRLF from a Windows
+# editor): `allow` rewrites the tables from there.
+EXCEPTION_HEADER = re.compile(r"^[ \t]*\[\[[ \t]*exception[ \t]*\]\][ \t]*(?:#.*)?\r?$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -421,14 +426,13 @@ def fixed_by(candidate: str, fixes: list[str]) -> bool:
         group, depth = same, split + 1
 
 
-def _findings(audit: dict[str, object], package: str) -> tuple[list[tuple[list[str], VersionKey | None]], list[str]]:
-    """Return the fixes each ``uv audit`` finding for ``package`` names with the version it found, and the advisory IDs.
+def _findings(audit: dict[str, object], package: str) -> list[tuple[str, list[str], VersionKey | None]]:
+    """Return each ``uv audit`` finding for ``package``: its advisory ID, the fixes it names and the version it found.
 
     A lock can hold several versions of one package (one per Python version or platform fork), so each finding keeps
-    its own.
+    its own. A finding that names no fix counts too: a named version answers for it, and its ID goes on the record.
     """
-    findings: list[tuple[list[str], VersionKey | None]] = []
-    advisories: list[str] = []
+    findings: list[tuple[str, list[str], VersionKey | None]] = []
     vulnerabilities = audit.get("vulnerabilities")
     for vulnerability in vulnerabilities if isinstance(vulnerabilities, list) else []:
         if not isinstance(vulnerability, dict):
@@ -437,22 +441,24 @@ def _findings(audit: dict[str, object], package: str) -> tuple[list[tuple[list[s
         if not isinstance(dependency, dict) or normalize(str(dependency.get("name", ""))) != package:
             continue
         fixes = vulnerability.get("fix_versions")
-        fixes = [str(fix) for fix in fixes] if isinstance(fixes, list) else []
-        if not fixes:
-            continue
         locked_version = str(dependency.get("version", ""))
-        findings.append((fixes, version_key(locked_version) if locked_version else None))
-        advisories.append(str(vulnerability.get("id", "")))
-    return findings, advisories
+        findings.append(
+            (
+                str(vulnerability.get("id", "")),
+                [str(fix) for fix in fixes] if isinstance(fixes, list) else [],
+                version_key(locked_version) if locked_version else None,
+            )
+        )
+    return findings
 
 
 def audit_fix(audit: dict[str, object], package: str) -> tuple[str, str] | None:
-    """Return the lowest version at or above the locked one that fixes every ``uv audit`` finding for ``package``, with the advisory IDs."""
-    found, advisories = _findings(audit, package)
+    """Return the lowest version at or above the locked one that carries every fix ``uv audit`` names for ``package``, with the IDs of the findings it answers."""
+    found = [each for each in _findings(audit, package) if each[1]]
     if not found:
         return None
-    findings = [fixes for fixes, _ in found]
-    locked = max((each for _, each in found if each is not None), default=None)
+    findings = [fixes for _, fixes, _ in found]
+    locked = max((each for _, _, each in found if each is not None), default=None)
     # The lowest release at or above the locked version that carries a fix for every finding; when no single
     # release does (or the audit's fixes are all below the locked version), the newest fix named.
     candidates = sorted(
@@ -465,7 +471,7 @@ def audit_fix(audit: dict[str, object], package: str) -> tuple[str, str] | None:
     )
     if chosen is None:
         chosen = max((fix for fixes in findings for fix in fixes), key=version_key)
-    return chosen, ", ".join(sorted(set(advisories)))
+    return chosen, ", ".join(sorted({advisory for advisory, _, _ in found}))
 
 
 def run_audit() -> dict[str, object]:
@@ -496,20 +502,32 @@ def fixes_ahead(audit: dict[str, object], package: str) -> list[str]:
     The exception they widen is shared by every Eye2Gene project, so a fix below this project's locked version counts
     too: with 5.2.7 locked here, 4.2.26 is what a project on 4.2.x needs, and its cutoff must let it in as well.
     """
-    found, _ = _findings(audit, package)
-    return sorted({fix for fixes, _ in found for fix in fixes}, key=version_key)
+    return sorted(
+        {fix for _, fixes, _ in _findings(audit, package) for fix in fixes},
+        key=version_key,
+    )
+
+
+def toml_string(text: str) -> str:
+    """Return ``text`` as a TOML basic string: a quote, a backslash or a control character in it reads back unchanged."""
+    escaped = re.sub(
+        r'["\\\x00-\x1f\x7f]',
+        lambda match: {'"': '\\"', "\\": "\\\\"}.get(match.group(), f"\\u{ord(match.group()):04X}"),
+        text,
+    )
+    return f'"{escaped}"'
 
 
 def render_entry(entry: Entry) -> str:
     """Return ``entry`` as the TOML table that goes at the end of the shared list."""
     return (
         "\n[[exception]]\n"
-        f'package = "{entry.package}"\n'
-        f'version = "{entry.version}"\n'
-        f'cutoff = "{format_timestamp(entry.cutoff)}"\n'
-        f'advisory = "{entry.advisory}"\n'
-        f'added = "{entry.added}"\n'
-        f'by = "{entry.by}"\n'
+        f"package = {toml_string(entry.package)}\n"
+        f"version = {toml_string(entry.version)}\n"
+        f"cutoff = {toml_string(format_timestamp(entry.cutoff))}\n"
+        f"advisory = {toml_string(entry.advisory)}\n"
+        f"added = {toml_string(entry.added)}\n"
+        f"by = {toml_string(entry.by)}\n"
     )
 
 
@@ -533,15 +551,25 @@ def describe_expired(name: str, cutoff: datetime, entry: Entry | None, days: int
 def updated_list(text: str, policy: Policy, entry: Entry, now: datetime) -> str:
     """Return the list with ``entry`` appended and the expired entries pruned; the header and [policy] stay as written.
 
-    An entry for the same package and version, which ``entry`` widens, goes too: the list holds one per pair.
+    An entry for the same package and version, which ``entry`` widens, goes too: the list holds one per pair. The
+    tables are rewritten from the first ``[[exception]]`` header on, however its line is spaced or commented, and the
+    result is read back: a list the rewrite would garble stops ``allow`` before it opens a pull request.
     """
-    head, _, _ = text.partition("\n[[exception]]\n")
+    match = EXCEPTION_HEADER.search(text)
+    head = text if match is None else text[: match.start()]
     kept = [
         old
         for old in policy.entries
         if now < old.expires(policy.quarantine_days) and (old.package, old.version) != (entry.package, entry.version)
     ]
-    return head.rstrip("\n") + "\n" + "".join(render_entry(each) for each in [*kept, entry])
+    updated = head.rstrip("\n") + "\n" + "".join(render_entry(each) for each in [*kept, entry])
+    expected = [(each.package, each.version) for each in [*kept, entry]]
+    if [(each.package, each.version) for each in load_policy(updated).entries] != expected:
+        raise SystemExit(
+            f"{LIST_FILE} could not be rewritten around its [[exception]] tables: "
+            f"edit it through a pull request on {LIST_REPO}"
+        )
+    return updated
 
 
 def fetch_text(source: str) -> str:
@@ -696,13 +724,34 @@ def wait_for_merge(pr_url: str) -> bool:
     return False
 
 
-def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
-    """Open a pull request that lists a security fix on e2g-workflows, auto-merged when the repository allows it."""
+def cmd_allow(package_arg: str, version_arg: str, now: datetime, advisory_arg: str = "") -> int:
+    """Open a pull request that lists a security fix on e2g-workflows, auto-merged when the repository allows it.
+
+    The entry records why the package skips the quarantine. From the audit, that is the findings its fix answers. A
+    named version must carry every fix the audit names, and answers for every finding of the package, with or without
+    a fix: naming is for the fix the audit lacks. When the audit reports nothing for the package, ``advisory_arg``
+    (``--advisory``) must say what does: a GHSA or CVE ID, or the fix release that raised a dependency floor onto it.
+    """
     package = normalize(package_arg)
+    advisory_arg = " ".join(advisory_arg.split())  # one line, however the shell handed it over
     gh("auth", "status")
     report = run_audit()
+    findings = _findings(report, package)
     if version_arg:
-        version, advisory = version_arg, ""
+        version = version_arg
+        unfixed = [advisory for advisory, fixes, _ in findings if fixes and not fixed_by(version, fixes)]
+        if unfixed:
+            fix = audit_fix(report, package)
+            raise SystemExit(
+                f"{package} {version} does not carry the fix for {', '.join(unfixed)}"
+                + (f": uv audit names {fix[0]}" if fix else "")
+            )
+        advisory = ", ".join(sorted({advisory for advisory, _, _ in findings if advisory}))
+        if not advisory and not advisory_arg:
+            raise SystemExit(
+                f"uv audit reports nothing for {package}: say what lets {version} skip the quarantine, "
+                f"`just allow {package} {version} --advisory <GHSA or CVE ID, or the reason>`"
+            )
     else:
         fix = audit_fix(report, package)
         if fix is None:
@@ -710,6 +759,8 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
                 f"uv audit reports no fix for {package}: name the version, `just allow {package} <version>`"
             )
         version, advisory = fix
+    if advisory_arg and advisory_arg not in advisory.split(", "):
+        advisory = f"{advisory}, {advisory_arg}" if advisory else advisory_arg
     # A named version gets the same widening: the audit's other fixes for the package, if it reports any.
     others = [each for each in fixes_ahead(report, package) if each != version]
     cutoff = release_cutoff(package, version)
@@ -748,7 +799,6 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime) -> int:
         gh("api", "user", "--jq", ".login"),
     )
     new_text = updated_list(text, policy, entry, now)
-    load_policy(new_text)
     pruned = [old for old in policy.entries if now >= old.expires(policy.quarantine_days)]
     replaced = [old for old in policy.entries if (old.package, old.version) == (package, version) and old not in pruned]
     message = f"chore(quarantine): allow {package} {version}" + (f" for {advisory}" if advisory else "")
@@ -847,6 +897,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     allow.add_argument("package")
     allow.add_argument("version", nargs="?", default="", help="defaults to the fix uv audit names")
+    allow.add_argument(
+        "--advisory",
+        default="",
+        help="why the package may skip the quarantine when uv audit reports nothing for it: a GHSA or CVE ID, or the reason",
+    )
     args = parser.parse_args(argv)
     now = datetime.now(UTC)
     try:
@@ -856,7 +911,7 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_check(now)
         if args.command == "from-lock":
             return cmd_from_lock()
-        return cmd_allow(args.package, args.version, now)
+        return cmd_allow(args.package, args.version, now, args.advisory)
     except GhError as exc:
         raise SystemExit(f"gh failed: {exc}") from exc
 
