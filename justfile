@@ -1,3 +1,5 @@
+set positional-arguments
+
 # Justfile for process-dcm
 
 # Show available commands
@@ -49,9 +51,9 @@ up *ARGS:
     uv sync --exclude-newer "7 days" --all-extras
     just build
 
-# Let a security fix in before its 7-day quarantine ends, for every Eye2Gene project: opens a PR to e2g-workflows; once it is merged, `just up`
-allow PACKAGE VERSION="":
-    uv run --no-project scripts/quarantine.py allow {{ PACKAGE }} {{ VERSION }}
+# Let a security fix in before its 7-day quarantine ends, for every Eye2Gene project: opens a PR to e2g-workflows; once it is merged, `just up`. Name the version when uv audit names no fix; `--advisory <ID or reason>` when it reports nothing for the package
+allow PACKAGE *ARGS:
+    uv run --no-project scripts/quarantine.py allow "$@"
 
 # The two hooks of python-ci.yml (e2g-workflows), run in CI only when defined: `ci-setup` in the test job once the
 # project is installed, before the tests (GH_TOKEN is set), and `ci-check` in the build job after `just build`.
