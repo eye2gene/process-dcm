@@ -1,12 +1,12 @@
 {
   "cSpell.words": [
+    "pypkg",
+    "eye2gene",
+    "e2g",
     "cookiecutter",
     "dcmf",
     "dicomdir",
-    "e2g",
-    "eye2gene",
     "fileset",
-    "pypkg",
     "rjson"
   ],
   "files.watcherExclude": {
@@ -21,6 +21,8 @@
   },
   "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
   "python.terminal.activateEnvironment": true,
+  "python.useEnvironmentsExtension": false,
+  "python-envs.defaultEnvManager": "ms-python.python:venv",
   "python.envFile": "${workspaceFolder}/.env",
   "python.testing.pytestArgs": ["tests", "-v", "-c", "/dev/null"],
   "python.testing.unittestEnabled": false,
