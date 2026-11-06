@@ -144,7 +144,8 @@ convention = "google"
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
-commit_message = "chore(release): {version}"
+# [skip ci]: release.yml may push it as the release app, whose pushes start workflows
+commit_message = "chore(release): {version} [skip ci]"
 # Put the new version in uv.lock too, inside the release commit. It runs in the semantic-release action's
 # container, which has no uv: release.yml copies the job's own uv (from setup-uv) into .release-tools/ for it, so
 # nothing is installed from PyPI. `set -eu` (the container's shell is sh) aborts the release if the lock fails.

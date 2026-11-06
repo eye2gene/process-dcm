@@ -234,6 +234,12 @@ This project uses [conventional commits](https://www.conventionalcommits.org/) a
    - Creates a git tag and GitHub Release
    - Builds and publishes the package
 
+The release commit, its tag and the coverage badge go to `main` as the `e2g-release` GitHub App wherever the repository
+sees the app's organisation secrets, `E2G_RELEASE_APP_ID` and `E2G_RELEASE_APP_PRIVATE_KEY` (Eye2Gene's private
+repositories). A ruleset that requires pull requests on `main` must list the app as a bypass actor. Elsewhere, in public
+repositories and outside the organisation, the job's own `GITHUB_TOKEN` pushes them, which works only where `main` takes
+direct pushes. The app's pushes start workflows, so its commits carry `[skip ci]`.
+
 Never edit the version number by hand: it lives only in `pyproject.toml` and is read at runtime via
 `importlib.metadata` (`process_dcm.__version__`). `CHANGELOG.md` is regenerated at every release, so don't edit it
 either; the changelog kept by commitizen up to v0.10.0 is preserved in [CHANGELOG-pre-1.0.0.md](CHANGELOG-pre-1.0.0.md).

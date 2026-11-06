@@ -27,12 +27,27 @@ jobs:
     concurrency:
       group: release-${{ github.ref_name }}
       cancel-in-progress: false
+    # The e2g-release GitHub App pushes the release where the org shares its key with the repo: a ruleset that requires
+    # pull requests on main can let the app through, never the job's own token. Public repos and repos outside the org
+    # see no org secrets and push with the job's token. Unlike that token, the app's pushes start workflows, so the
+    # commits it pushes carry [skip ci] (commit_message in pyproject.toml, and the badge's)
+    env:
+      RELEASE_APP: ${{ secrets.E2G_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
+      - name: Mint a token of the release app
+        id: app-token
+        if: env.RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.E2G_RELEASE_APP_ID }}  # the app ID works here too
+          private-key: ${{ secrets.E2G_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
       - name: Reset to the tested commit
         run: git reset --hard "$GITHUB_SHA"
@@ -53,7 +68,7 @@ jobs:
         id: release
         uses: python-semantic-release/python-semantic-release@v10
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
       - name: Build package
         if: steps.release.outputs.released == 'true'
@@ -67,18 +82,30 @@ jobs:
         if: steps.release.outputs.released == 'true'
         uses: python-semantic-release/publish-action@v10
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
   coverage-badge:
     runs-on: ubuntu-latest
     needs: [ci, release]
     permissions:
       contents: write
+    # The badge goes to main like the release: through the release app where there is one
+    env:
+      RELEASE_APP: ${{ secrets.E2G_RELEASE_APP_PRIVATE_KEY != '' }}
     steps:
+      - name: Mint a token of the release app
+        id: app-token
+        if: env.RELEASE_APP == 'true'
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.E2G_RELEASE_APP_ID }}
+          private-key: ${{ secrets.E2G_RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - uses: actions/checkout@v7
         with:
           ref: main
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
       - uses: astral-sh/setup-uv@main
 
