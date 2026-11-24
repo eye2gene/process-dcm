@@ -132,8 +132,7 @@ process-dcm/
 ├── .editorconfig               # Editor-agnostic formatting rules
 ├── .gitignore
 ├── .python-version             # Pin Python version for uv
-├── AGENTS.md                   # The same AI rules, for Codex, Copilot's coding agent and other agents
-├── CLAUDE.md                   # The same AI rules, for Claude Code
+├── AGENTS.md                   # The same AI rules, for Claude Code, Codex, Copilot's coding agent and other agents
 ├── README.md
 ├── justfile                    # Command runner (just qa, just test, etc.)
 └── pyproject.toml              # Project metadata, deps, tool config
@@ -143,7 +142,7 @@ process-dcm/
 
 - **`.github/workflows/`** — CI calls the shared [e2g-workflows](https://github.com/eye2Gene/e2g-workflows) reusable workflow. CI logic is centralised there. What this project needs on top goes through the workflow's inputs (`with:` in `ci.yml`: its Python versions), the justfile's `ci-setup` and `ci-check` recipes, or a job of its own next to the call, never a copy of the workflow's jobs. See e2g-workflows' README, "Extending python-ci.yml".
 - **`.kiro/steering/`** — The AI rules (Python style, commit messages, command safety, supply-chain safety), loaded automatically by Kiro.
-- **`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`** — The same rules for Claude Code, for Codex and Copilot's coding agent, and for Copilot chat and code review. They come from the template: change them there and run `cruft update`. `CLAUDE.md` also carries project-specific notes.
+- **`AGENTS.md`, `.github/copilot-instructions.md`** — The same rules for Claude Code, Codex and Copilot's coding agent, and for Copilot chat and code review. There is no `CLAUDE.md`: Claude Code reads `AGENTS.md` when none exists, and would read only `CLAUDE.md` if one were added. They come from the template: change them there and run `cruft update`. `AGENTS.md` also carries project-specific notes.
 - **`.vscode/`** — Shared editor settings (Ruff format-on-save, pytest discovery, recommended extensions). Works in VS Code and Kiro out of the box.
 - **`justfile`** — Single interface for all dev commands. CI uses the same recipes, so local and CI behaviour match.
 - **`.cruft.json`** — Template tracking. Run `cruft update` to pull improvements from [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg).
@@ -206,6 +205,18 @@ just allow setuptools 84.1.0 --advisory GHSA-xxxx     # when uv audit reports no
 
 Every entry records why the package skips the quarantine: the advisories `uv audit` reports, or what `--advisory` states (a GHSA or CVE ID, or the fix release that raised a dependency floor onto it). It opens a pull request that lists the fix in [`quarantine-exceptions.toml`](https://github.com/eye2Gene/e2g-workflows/blob/main/quarantine-exceptions.toml) of e2g-workflows and prints its URL; merge it there (or let auto-merge do it, once that repository enables it), then run `just up`. `just up` writes the list's active entries to your user-level uv configuration (`~/.config/uv/uv.toml`) before locking, so a fix listed by anyone reaches every project on its next `just up`, and CI refuses a `uv.lock` that lets a package in early without such an entry. Both need the GitHub CLI logged in (`gh auth login`). An entry expires 7 days after the fix was uploaded; the next `just up` drops the pin.
 
+When a dependency forbids the release that carries the fixes, no early fix helps: declare a dated exception in `pyproject.toml` instead (one is commented out there):
+
+```toml
+[[tool.quarantine.audit-exception]]
+package = "pillow"
+below = "13"        # the release that carries the fixes
+until = 2027-02-24  # through this day; the audit fails again after it
+reason = "a dependency requires Pillow<13, and the advisories are fixed only in 13.0.0"
+```
+
+`just qa` and `just ci` audit through `scripts/quarantine.py audit`, which leaves out those findings through the `until` day and fails on everything else, as `uv audit` does. A finding whose fix the cap allows (a release below `below`, such as a backport) still fails, so `just up` takes it. An expired exception fails the audit, so the date forces a decision. Once the lock holds no version below `below`, the exception covers nothing: `just ci` fails on it and `just up` deletes it, with any comment right above it.
+
 ### Test data
 
 Most fixtures are small DICOMs committed under `tests/`. The larger sample set `tests/example_dir` (about 625 MB) is
@@ -253,11 +264,10 @@ This project publishes to [PyPI.org](https://pypi.org/project/process-dcm/) usin
 This project includes configuration for AI coding assistants:
 
 - **Kiro**: `.kiro/steering/` contains the rules for Python style, commit messages, command safety and supply-chain safety
-- **Claude Code**: `CLAUDE.md`
-- **Codex, Copilot's coding agent and other agents**: `AGENTS.md`
+- **Claude Code, Codex, Copilot's coding agent and other agents**: `AGENTS.md`
 - **Copilot chat and code review**: `.github/copilot-instructions.md`
 
-These are committed to git so all contributors get consistent AI behaviour. No personal setup required — open the project in any of those tools and the rules apply automatically. The four files carry the same rules and are maintained in the [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg) template.
+These are committed to git so all contributors get consistent AI behaviour. No personal setup required — open the project in any of those tools and the rules apply automatically. The three carry the same rules and are maintained in the [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg) template.
 
 ## Keeping up with template updates
 

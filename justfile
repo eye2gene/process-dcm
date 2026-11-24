@@ -18,19 +18,19 @@ type-check-concise:
 type-check-watch:
     uv run ty check --watch .
 
-# Run the formatting, linting and type checking commands
+# Run the formatting, linting, type checking and dependency audit commands
 qa:
     uv run ruff format .
     uv run ruff check . --fix
     uv run ty check .
-    uv audit
+    uv run --no-project scripts/quarantine.py audit
 
-# Check formatting, linting and type checking (no fixes, for CI)
+# Check formatting, linting, type checking and the dependency audit (no fixes, for CI)
 ci:
     uv run ruff format --check .
     uv run ruff check .
     uv run ty check .
-    uv audit
+    uv run --no-project scripts/quarantine.py audit
 
 # Check dependency licenses
 license-check:
@@ -41,13 +41,13 @@ qa-all:
     just qa
     just test
 
-# Upgrade the project library and build it, with the quarantine exceptions shared by every Eye2Gene project
+# Upgrade the project library and build it, with the quarantine exceptions shared by every Eye2Gene project; drops audit exceptions that cover nothing any more
 up *ARGS:
     @echo "Upgrading with {{ ARGS }}"
     uv run --no-project scripts/quarantine.py sync
     uv lock --exclude-newer "7 days" -U {{ ARGS }}
     uv run --no-project scripts/quarantine.py check
-    uv audit
+    uv run --no-project scripts/quarantine.py audit --prune
     uv sync --exclude-newer "7 days" --all-extras
     just build
 

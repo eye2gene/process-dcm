@@ -20,6 +20,16 @@ whose fixes a named version must carry, or ``--advisory`` when the audit reports
 ``from-lock`` serves the release: the semantic-release container and the build step re-lock without reaching the
 list, so they take the exceptions from the lock CI validated. The script needs only the standard library, so
 ``uv run --no-project scripts/quarantine.py`` runs it without touching the project's lock.
+
+Some fixes cannot be taken at all for a while, early or not: a dependency caps the package below the release that
+carries them. A project declares each such case in its own ``pyproject.toml``, as a
+``[[tool.quarantine.audit-exception]]`` table with the ``package``, the version the fixes arrive in (``below``), a
+date (``until``) and the ``reason``. ``audit`` runs ``uv audit`` and leaves out the advisories an exception covers:
+those found in a locked version below ``below``, through the ``until`` day, unless the advisory names a fix the cap
+allows (a release above the locked one and below ``below``), which ``just up`` takes. An expired exception fails, so
+the date forces a decision; one that covers nothing, because the lock holds no version of its package below
+``below`` any more, fails as well, and ``audit --prune``, which ``just up`` runs after it re-locks, deletes it.
+``just ci`` and ``just qa`` run ``audit``.
 """
 
 import argparse
@@ -34,7 +44,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 # ruff: noqa: S603, S607
@@ -47,6 +57,13 @@ BLOCK_BEGIN = "# >>> e2g quarantine exceptions (managed: edit eye2Gene/e2g-workf
 BLOCK_END = "# <<< e2g quarantine exceptions <<<"
 TIMESTAMP = "%Y-%m-%dT%H:%M:%SZ"
 MERGE_WAIT_SECONDS = 120
+AUDIT_TABLE = "tool.quarantine.audit-exception"
+# A table header of any kind, the audit-exception ones included however they are spaced or commented.
+_TABLE_HEADER = re.compile(r"^[ \t]*\[\[?[^\[\]\n]+\]\]?[ \t]*(?:#.*)?\r?$")
+_AUDIT_HEADER = re.compile(
+    r"^[ \t]*\[\[[ \t]*tool[ \t]*\.[ \t]*quarantine[ \t]*\.[ \t]*audit-exception[ \t]*\]\][ \t]*"
+    r"(?:#.*)?\r?$"
+)
 _BLOCK = re.compile(
     rf"^{re.escape(BLOCK_BEGIN)}\n.*?^{re.escape(BLOCK_END)}\n?",
     re.MULTILINE | re.DOTALL,
@@ -89,6 +106,26 @@ class Report:
     active: list[tuple[str, Entry]]
     expired: list[tuple[str, datetime, Entry | None]]
     unlisted: list[tuple[str, datetime | None]]
+
+
+@dataclass(frozen=True)
+class AuditException:
+    """One advisory exception a project declares: its package's findings below ``below`` pass until ``until``."""
+
+    package: str
+    below: str
+    until: date
+    reason: str
+
+
+@dataclass
+class AuditOutcome:
+    """What ``uv audit`` found once a project's exceptions are applied."""
+
+    failing: list[tuple[str, str, str]]  # package, version, advisory ID
+    excepted: dict[str, int]  # package to the number of findings left out
+    expired: list[AuditException]
+    stale: list[AuditException]
 
 
 class GhError(Exception):
@@ -478,7 +515,8 @@ def run_audit() -> dict[str, object]:
     """Return the ``uv audit`` report for the project in the current directory.
 
     A report counts whatever the exit code, since findings make it non-zero; no report means the audit failed (no
-    network, a broken lock), and an empty one would let ``allow`` go on without the fixes it widens the cutoff over.
+    network, a broken lock), and an empty one would pass ``audit`` and let ``allow`` go on without the fixes it widens
+    the cutoff over.
     """
     audit = subprocess.run(
         ["uv", "audit", "--output-format", "json"],
@@ -492,7 +530,7 @@ def run_audit() -> dict[str, object]:
         report = None
     if not isinstance(report, dict) or not isinstance(report.get("vulnerabilities"), list):
         detail = audit.stderr.strip().splitlines()[-1] if audit.stderr.strip() else f"exit {audit.returncode}"
-        raise SystemExit(f"uv audit failed, so `allow` cannot see the fixes it reports: {detail}")
+        raise SystemExit(f"uv audit failed, so its findings cannot be read: {detail}")
     return report
 
 
@@ -506,6 +544,203 @@ def fixes_ahead(audit: dict[str, object], package: str) -> list[str]:
         {fix for _, fixes, _ in _findings(audit, package) for fix in fixes},
         key=version_key,
     )
+
+
+def _audit_until(value: object, *, what: str) -> date:
+    if isinstance(value, datetime):  # a TOML date-time is a date too: refuse it rather than drop its time
+        raise SystemExit(f"{what}: until must be a date (2027-02-24), got {value!r}")
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            pass
+    raise SystemExit(f"{what}: until must be a date (2027-02-24), got {value!r}")
+
+
+def load_audit_exceptions(pyproject_text: str) -> list[AuditException]:
+    """Return the ``[[tool.quarantine.audit-exception]]`` tables of a ``pyproject.toml``, refusing malformed ones."""
+    try:
+        data = tomllib.loads(pyproject_text)
+    except tomllib.TOMLDecodeError as exc:
+        raise SystemExit(f"pyproject.toml is not valid TOML: {exc}") from exc
+    tool = data.get("tool")
+    quarantine = tool.get("quarantine") if isinstance(tool, dict) else None
+    raw_entries = quarantine.get("audit-exception", []) if isinstance(quarantine, dict) else []
+    if not isinstance(raw_entries, list):
+        raise SystemExit(f"pyproject.toml: {AUDIT_TABLE} must be an array of tables ([[{AUDIT_TABLE}]])")
+    exceptions: list[AuditException] = []
+    for index, raw in enumerate(raw_entries, start=1):
+        what = f"pyproject.toml: [[{AUDIT_TABLE}]] #{index}"
+        if not isinstance(raw, dict):
+            raise SystemExit(f"{what} is not a table")
+        unknown = sorted(set(raw) - {"package", "below", "until", "reason"})
+        if unknown:
+            raise SystemExit(
+                f"{what}: unknown key{'s' if len(unknown) > 1 else ''} {', '.join(unknown)}; an exception takes "
+                "package, below, until and reason"
+            )
+        below = _string(raw, "below", what=what)
+        if _VERSION.match(below) is None:
+            raise SystemExit(f"{what}: below must be a PEP 440 version, got {below!r}")
+        exceptions.append(
+            AuditException(
+                package=normalize(_string(raw, "package", what=what)),
+                below=below,
+                until=_audit_until(raw.get("until"), what=what),
+                reason=_string(raw, "reason", what=what),
+            )
+        )
+    packages = [exception.package for exception in exceptions]
+    duplicates = sorted({name for name in packages if packages.count(name) > 1})
+    if duplicates:
+        raise SystemExit(
+            f"pyproject.toml: more than one [[{AUDIT_TABLE}]] for {', '.join(duplicates)}: keep one per package, "
+            "with the `below` that carries every fix"
+        )
+    return exceptions
+
+
+def locked_versions(lock_text: str) -> dict[str, list[str]]:
+    """Return every version ``uv.lock`` holds of each package, by normalised name: a fork per Python can hold two."""
+    packages = tomllib.loads(lock_text).get("package", [])
+    versions: dict[str, list[str]] = {}
+    for package in packages if isinstance(packages, list) else []:
+        if not isinstance(package, dict) or not isinstance(package.get("version"), str):
+            continue
+        held = versions.setdefault(normalize(str(package.get("name", ""))), [])
+        if package["version"] not in held:
+            held.append(package["version"])
+    return versions
+
+
+def apply_audit_exceptions(
+    audit: dict[str, object],
+    exceptions: list[AuditException],
+    locked: dict[str, list[str]],
+    today: date,
+) -> AuditOutcome:
+    """Leave out of a ``uv audit`` report the findings an exception covers, and sort out the exceptions themselves.
+
+    An exception is stale when the lock holds no version of its package below ``below``: it covers nothing, whatever
+    its date, so ``audit --prune`` can delete it. Otherwise it has expired the day after ``until`` and covers nothing
+    either; while it holds, it covers its package's findings in versions below ``below``, except those whose fix the
+    cap allows (a release above the locked version and below ``below``, such as a backport): ``just up`` takes that.
+    """
+    stale = [
+        exception
+        for exception in exceptions
+        if not any(version_key(version) < version_key(exception.below) for version in locked.get(exception.package, []))
+    ]
+    expired = [exception for exception in exceptions if exception not in stale and today > exception.until]
+    holding = [exception for exception in exceptions if exception not in stale and exception not in expired]
+    failing: list[tuple[str, str, str]] = []
+    excepted: dict[str, int] = {}
+    vulnerabilities = audit.get("vulnerabilities")
+    for vulnerability in vulnerabilities if isinstance(vulnerabilities, list) else []:
+        if not isinstance(vulnerability, dict):
+            continue
+        dependency = vulnerability.get("dependency")
+        if not isinstance(dependency, dict):
+            dependency = {}
+        package = normalize(str(dependency.get("name", "")))
+        version = str(dependency.get("version", ""))
+        fixes = vulnerability.get("fix_versions")
+        fix_keys = [version_key(str(fix)) for fix in fixes] if isinstance(fixes, list) else []
+        if version and any(
+            exception.package == package
+            and version_key(version) < version_key(exception.below)
+            and not any(version_key(version) < fix < version_key(exception.below) for fix in fix_keys)
+            for exception in holding
+        ):
+            excepted[package] = excepted.get(package, 0) + 1
+        else:
+            failing.append((package, version, str(vulnerability.get("id", ""))))
+    return AuditOutcome(failing, excepted, expired, stale)
+
+
+def _by_hand(packages: set[str]) -> SystemExit:
+    return SystemExit(
+        f"could not remove the {', '.join(sorted(packages))} audit exception(s) from pyproject.toml cleanly: "
+        "delete them by hand"
+    )
+
+
+def _without_empty_parents(data: dict[str, object]) -> dict[str, object]:
+    """Return ``data`` without an empty ``tool.quarantine`` or ``tool`` table: present or not, they hold nothing.
+
+    A header declared explicitly (``[tool.quarantine]``) stays in the file when its last exception goes.
+    """
+    tool = data.get("tool")
+    if isinstance(tool, dict):
+        if tool.get("quarantine") == {}:
+            del tool["quarantine"]
+        if not tool:
+            del data["tool"]
+    return data
+
+
+def _audit_table_span(lines: list[str], packages: set[str]) -> tuple[int, int] | None:
+    """Return the lines to delete for the first audit-exception table of ``packages``, its separating blanks included.
+
+    A table runs from the comments right above its header to its last line of content: comments and blank lines
+    just before the next header belong to that header. The blank lines after it go with it or, at the end of the
+    file, those before it.
+    """
+    headers = [i for i, line in enumerate(lines) if _TABLE_HEADER.match(line)]
+    for position, start in enumerate(headers):
+        if not _AUDIT_HEADER.match(lines[start]):
+            continue
+        end = headers[position + 1] if position + 1 < len(headers) else len(lines)
+        while end > start + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+            end -= 1
+        try:
+            table = tomllib.loads("".join(lines[start:end]))["tool"]["quarantine"]
+            package = table["audit-exception"][0].get("package")
+        except (tomllib.TOMLDecodeError, KeyError, IndexError) as exc:
+            raise _by_hand(packages) from exc  # a value spans a line that looks like a header
+        if not isinstance(package, str) or normalize(package) not in packages:
+            continue
+        after = end
+        while after < len(lines) and not lines[after].strip():
+            after += 1
+        before = start
+        while before > 0 and lines[before - 1].lstrip().startswith("#"):
+            before -= 1
+        if after == len(lines):
+            while before > 0 and not lines[before - 1].strip():
+                before -= 1
+        return before, after
+    return None
+
+
+def remove_audit_exceptions(pyproject_text: str, packages: set[str]) -> str:
+    """Return ``pyproject_text`` without the audit-exception tables of ``packages``, every other line kept as it was.
+
+    Tables go one at a time, each with the blank lines that separated it. The result must parse to the same data
+    less those tables, or nothing is removed.
+    """
+    lines = pyproject_text.splitlines(keepends=True)
+    while (span := _audit_table_span(lines, packages)) is not None:
+        del lines[span[0] : span[1]]
+    result = "".join(lines)
+    expected = tomllib.loads(pyproject_text)
+    quarantine = expected.get("tool", {}).get("quarantine", {})
+    kept = [
+        raw for raw in quarantine.get("audit-exception", []) if normalize(str(raw.get("package", ""))) not in packages
+    ]
+    if kept:
+        quarantine["audit-exception"] = kept
+    else:
+        quarantine.pop("audit-exception", None)
+    try:
+        pruned = tomllib.loads(result)
+    except tomllib.TOMLDecodeError as exc:  # a line cut was inside a multi-line value
+        raise _by_hand(packages) from exc
+    if _without_empty_parents(pruned) != _without_empty_parents(expected):
+        raise _by_hand(packages)
+    return result
 
 
 def toml_string(text: str) -> str:
@@ -701,6 +936,87 @@ def cmd_check(now: datetime) -> int:
     return 1
 
 
+def _advisories(count: int) -> str:
+    return f"{count} advisor{'y' if count == 1 else 'ies'}"
+
+
+def cmd_audit(now: datetime, *, prune: bool) -> int:
+    """Run ``uv audit`` less the advisories ``pyproject.toml`` excepts; with ``prune``, delete the stale exceptions."""
+    pyproject = Path("pyproject.toml")
+    # Bytes, so pruning keeps the file's line endings (CRLF or LF) on every platform
+    text = pyproject.read_bytes().decode("utf-8") if pyproject.is_file() else ""
+    exceptions = load_audit_exceptions(text)
+    report = run_audit()  # uv audit locks first: measure the exceptions against the lock it leaves
+    lock = Path("uv.lock")
+    if exceptions and not lock.is_file():
+        raise SystemExit("no uv.lock to measure the audit exceptions against: run `just up`")
+    locked = locked_versions(lock.read_text()) if lock.is_file() else {}
+    outcome = apply_audit_exceptions(report, exceptions, locked, now.date())
+    statuses = report.get("adverse_statuses")
+    for status in statuses if isinstance(statuses, list) else []:
+        if isinstance(status, dict):
+            reason = f": {status['reason']}" if status.get("reason") else ""
+            print(f"warning: {status.get('name')} is {status.get('status')}{reason}")
+    details: dict[tuple[str, str, str], tuple[list[str], str]] = {}
+    vulnerabilities = report.get("vulnerabilities")
+    for vulnerability in vulnerabilities if isinstance(vulnerabilities, list) else []:
+        dependency = vulnerability.get("dependency") if isinstance(vulnerability, dict) else None
+        if isinstance(dependency, dict):
+            fixes = vulnerability.get("fix_versions")
+            details[
+                (
+                    normalize(str(dependency.get("name", ""))),
+                    str(dependency.get("version", "")),
+                    str(vulnerability.get("id", "")),
+                )
+            ] = (
+                [str(fix) for fix in fixes] if isinstance(fixes, list) else [],
+                str(vulnerability.get("summary") or ""),
+            )
+    for finding in outcome.failing:
+        fixes, summary = details.get(finding, ([], ""))
+        fixed = f"fixed in {', '.join(fixes)}" if fixes else "no fix released"
+        package, version, advisory = finding
+        print(f"error: {package} {version}: {advisory}, {fixed}" + (f": {summary}" if summary else ""))
+    if outcome.failing:
+        print(
+            "take the fixes with `just up`, or `just allow <package>` for one younger than 7 days; when a "
+            f"dependency forbids the fixed release, declare a dated [[{AUDIT_TABLE}]] in pyproject.toml"
+        )
+    for exception in outcome.expired:
+        print(
+            f"error: the audit exception for {exception.package} below {exception.below} expired on "
+            f"{exception.until.isoformat()} ({exception.reason}): give it a new date or remove its cause"
+        )
+    if outcome.stale and prune:
+        pruned = remove_audit_exceptions(text, {each.package for each in outcome.stale})
+        pyproject.write_bytes(pruned.encode("utf-8"))
+    for exception in outcome.stale:
+        if exception.package in locked:
+            why = f"uv.lock holds no {exception.package} below {exception.below}"
+            advice = ": remove it or run `just up`"
+        else:
+            why = f"uv.lock holds no {exception.package} at all: is the name misspelt?"
+            advice = " Correct it or remove it."
+        if prune:
+            print(
+                f"removed the audit exception for {exception.package} below {exception.below} from "
+                f"pyproject.toml: {why}"
+            )
+        else:
+            print(
+                f"error: the audit exception for {exception.package} below {exception.below} covers nothing, "
+                f"{why}{advice}"
+            )
+    for package, count in outcome.excepted.items():
+        exception = next(each for each in exceptions if each.package == package)
+        print(f"{package}: {_advisories(count)} excepted until {exception.until.isoformat()} ({exception.reason})")
+    failed = bool(outcome.failing or outcome.expired or (outcome.stale and not prune))
+    if not failed and not outcome.excepted:
+        print("no known vulnerabilities")
+    return 1 if failed else 0
+
+
 def wait_for_merge(pr_url: str) -> bool:
     """Return whether the pull request merged within the wait, polling GitHub a few times."""
     deadline = time.monotonic() + MERGE_WAIT_SECONDS
@@ -876,7 +1192,7 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime, advisory_arg: s
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse the command line and run one of ``sync``, ``check`` or ``allow``."""
+    """Parse the command line and run one of ``sync``, ``check``, ``from-lock``, ``audit`` or ``allow``."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser(
@@ -890,6 +1206,15 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser(
         "from-lock",
         help="write the exceptions uv.lock records to the user-level uv config (release container, build step)",
+    )
+    audit = commands.add_parser(
+        "audit",
+        help="run uv audit, less the advisories pyproject.toml excepts until a date",
+    )
+    audit.add_argument(
+        "--prune",
+        action="store_true",
+        help="delete the exceptions that cover nothing any more (just up)",
     )
     allow = commands.add_parser(
         "allow",
@@ -911,6 +1236,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_check(now)
         if args.command == "from-lock":
             return cmd_from_lock()
+        if args.command == "audit":
+            return cmd_audit(now, prune=args.prune)
         return cmd_allow(args.package, args.version, now, args.advisory)
     except GhError as exc:
         raise SystemExit(f"gh failed: {exc}") from exc
