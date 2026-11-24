@@ -70,7 +70,7 @@ When adding a dependency, a tool, or anything a build fetches (Dockerfile, CI wo
 - GitHub Actions are used at a release tag of their publisher (`actions/checkout@v7`), never at a branch of a third party. The one exception is Astral's `setup-uv@main`: Astral releases so often that a tag would lag within weeks.
 - A pin lives in a committed file with a `just` recipe to move it (e.g. `crystal-eye-version.txt`, `ffmpeg.sha256`), so an update is a reviewed commit, and a check builds and runs what the pin produces before it is deployed.
 - Our own private binaries (e.g. `crystal-eye`) come from the eye2Gene GitHub releases with `gh release download`, pinned by version and checked by the build.
-- `uv audit` must pass, and a PR says why a new dependency or tool is needed and where it comes from.
+- `just ci` must pass, its dependency audit included. When a dependency forbids the release that fixes an advisory, declare a dated `[[tool.quarantine.audit-exception]]` in `pyproject.toml` (`package`, `below`, `until`, `reason`), never an ignore flag: the audit fails again after `until`, and `just up` drops the exception once the lock holds nothing below `below`. A PR says why a new dependency or tool is needed and where it comes from.
 
 # Project: Process DCM
 

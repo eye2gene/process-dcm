@@ -160,6 +160,18 @@ build_command = """
 [tool.semantic_release.changelog]
 exclude_commit_patterns = ['^chore: update coverage badge \[skip ci\]$']
 
+# A dated exception to the dependency audit (`just ci`), for advisories whose fixed release a dependency forbids:
+# findings in versions below `below` pass through the `until` day, then fail again; one whose fix is released
+# below `below` (a backport) still fails, for `just up` to take. `just up` deletes the exception, with any comment
+# right above it, once the lock holds nothing below `below`. A fix that is only younger than 7 days goes through
+# `just allow` instead.
+
+# [[tool.quarantine.audit-exception]]
+# package = "pillow"
+# below = "13"
+# until = 2027-02-24
+# reason = "a dependency requires Pillow<13, and the advisories are fixed only in 13.0.0"
+
 [tool.ty]
 # All rules are enabled as "error" by default; no need to specify unless overriding.
 
