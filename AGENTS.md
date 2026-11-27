@@ -1,4 +1,11 @@
-# Python coding standards
+# Agent rules of this project
+
+The template's rules for every AI coding agent (Claude Code, Kiro, Codex, Copilot). The org's own agent rules are
+members-only: run `setup-repo.sh --local --merge-agents` from
+[eye2gene/.github-private](https://github.com/eye2gene/.github-private) once in your clone to put them on top of this
+file there, never in a commit.
+
+## Python coding standards
 
 When generating Python code (modules, classes, functions):
 
@@ -20,7 +27,7 @@ When generating tests:
 - Each test function must include a one-line docstring describing its purpose.
 - Output code only, no explanations.
 
-# Git commit message standards
+## Git commit message standards
 
 When generating Git commit messages:
 
@@ -38,13 +45,13 @@ When generating Git commit messages:
 - Append `!` only for breaking changes.
 - Do not end the subject with a period.
 
-# Command safety
+## Command safety
 
-## AWS CLI
+### AWS CLI
 
 Never execute `aws` commands automatically. Always present them to the user and ask them to run manually. This applies to any command that starts with `aws` or invokes the AWS CLI in any form.
 
-## Destructive rm commands
+### Destructive rm commands
 
 Never automatically run `rm -rf` or `rm -r` on broad or sensitive paths. This includes:
 
@@ -57,7 +64,7 @@ For these cases, present the command and ask the user to run it manually.
 
 Deleting small, specific files or build artifacts (e.g., `rm -rf node_modules`, `rm -rf .venv`, `rm -rf dist/`) within a project directory is fine.
 
-# Supply-chain safety
+## Supply-chain safety
 
 When adding a dependency, a tool, or anything a build fetches (Dockerfile, CI workflow, justfile, setup script):
 

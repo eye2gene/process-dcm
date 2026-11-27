@@ -160,9 +160,9 @@ build_command = """
 [tool.semantic_release.changelog]
 exclude_commit_patterns = ['^chore: update coverage badge \[skip ci\]$']
 
-# A dated exception to the dependency audit (`just ci`), for advisories whose fixed release a dependency forbids:
-# findings in versions below `below` pass through the `until` day, then fail again; one whose fix is released
-# below `below` (a backport) still fails, for `just up` to take. `just up` deletes the exception, with any comment
+# A dated exception to the dependency audit (`just ci`), for advisories whose fixed release a dependency forbids.
+# `below` is the first version that dependency forbids (its cap): findings in versions below it pass through the
+# `until` day, then fail again; one whose fix is released below it (a backport) still fails, for `just up` to take. `just up` deletes the exception, with any comment
 # right above it, once the lock holds nothing below `below`. A fix that is only younger than 7 days goes through
 # `just allow` instead.
 

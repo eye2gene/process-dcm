@@ -1,0 +1,4 @@
+# Code owners of this repository (SOP-25 §5.1.3.5): required for code-owner review; does not inherit from eye2gene/.github.
+# As eye2gene/.github-private's CODEOWNERS.template: any one owner on the last matching line can approve, and the
+# technical leads are on every line. Owners must be visible @eye2gene/<team>s with write access on the repository.
+* @eye2gene/tech-team @eye2gene/technical-leads

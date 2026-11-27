@@ -101,16 +101,11 @@ series-level `laterality` is `B` and the exam-level `scan_datetime` is the earli
 ```txt
 process-dcm/
 ├── .github/
-│   ├── copilot-instructions.md # The AI rules, for GitHub Copilot (chat, code review, coding agent)
+│   ├── CODEOWNERS              # Code owners for code-owner review (tech-team, technical-leads)
 │   └── workflows/
 │       ├── ci.yml              # Calls reusable CI from e2g-workflows
+│       ├── pr-lint.yml         # Calls the org PR check from eye2gene/.github (title format, issue link)
 │       └── release.yml         # Semantic release + publish on main
-├── .kiro/
-│   └── steering/
-│       ├── commits.md          # Conventional commit rules for Kiro
-│       ├── python.md           # Python coding standards for Kiro
-│       ├── safety.md           # Command safety guardrails for Kiro
-│       └── supply-chain.md     # Supply-chain rules: signed upstream source, pins, 7-day quarantine
 ├── .vscode/
 │   ├── extensions.json         # Recommended VS Code/Kiro extensions
 │   └── settings.json           # Editor settings (Ruff, pytest, etc.)
@@ -132,7 +127,7 @@ process-dcm/
 ├── .editorconfig               # Editor-agnostic formatting rules
 ├── .gitignore
 ├── .python-version             # Pin Python version for uv
-├── AGENTS.md                   # The same AI rules, for Claude Code, Codex, Copilot's coding agent and other agents
+├── AGENTS.md                   # The template's AI rules for every agent
 ├── README.md
 ├── justfile                    # Command runner (just qa, just test, etc.)
 └── pyproject.toml              # Project metadata, deps, tool config
@@ -141,8 +136,8 @@ process-dcm/
 **Key files:**
 
 - **`.github/workflows/`** — CI calls the shared [e2g-workflows](https://github.com/eye2Gene/e2g-workflows) reusable workflow. CI logic is centralised there. What this project needs on top goes through the workflow's inputs (`with:` in `ci.yml`: its Python versions), the justfile's `ci-setup` and `ci-check` recipes, or a job of its own next to the call, never a copy of the workflow's jobs. See e2g-workflows' README, "Extending python-ci.yml".
-- **`.kiro/steering/`** — The AI rules (Python style, commit messages, command safety, supply-chain safety), loaded automatically by Kiro.
-- **`AGENTS.md`, `.github/copilot-instructions.md`** — The same rules for Claude Code, Codex and Copilot's coding agent, and for Copilot chat and code review. There is no `CLAUDE.md`: Claude Code reads `AGENTS.md` when none exists, and would read only `CLAUDE.md` if one were added. They come from the template: change them there and run `cruft update`. `AGENTS.md` also carries project-specific notes.
+- **`AGENTS.md`** — The template's AI rules, read natively by Claude Code, Kiro, Codex and Copilot. The org's own agent rules are members-only and never committed: see "Development" for putting them in your clone. There is no `CLAUDE.md`: Claude Code reads `AGENTS.md` when there is no `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` in the repository or a folder above it (your own `~/.claude/CLAUDE.md` does not count, unless `~/.claude` is reached through a folder above the repository, as with a symlink: then keep your personal instructions in `~/.claude/rules/` instead). They come from the template: change them there and run `cruft update`.
+- **`.github/CODEOWNERS`, `.github/workflows/pr-lint.yml`** — The two per-repo files of the org conventions, which GitHub does not inherit from [eye2gene/.github](https://github.com/eye2gene/.github): the code owners (`tech-team` or a technical lead approves) and the PR title and issue-link check.
 - **`.vscode/`** — Shared editor settings (Ruff format-on-save, pytest discovery, recommended extensions). Works in VS Code and Kiro out of the box.
 - **`justfile`** — Single interface for all dev commands. CI uses the same recipes, so local and CI behaviour match.
 - **`.cruft.json`** — Template tracking. Run `cruft update` to pull improvements from [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg).
@@ -170,6 +165,8 @@ uv run --no-project scripts/quarantine.py from-lock
 # Install the project (editable) and all dev dependency groups
 uv sync
 ```
+
+Then, once per clone, install the org's agent rules and commit message check with `setup-repo.sh --local --merge-agents` from [eye2gene/.github-private](https://github.com/eye2gene/.github-private) (its README, "Once per clone"). They stay in your clone: the org rules go on top of the committed `AGENTS.md` and git does not see the change, and the check goes into `.git/hooks`. Before a `git pull` or `cruft update` that changes `AGENTS.md`, run it with `--restore`, then again without.
 
 Python 3.11 is the minimum supported version; development and CI default to 3.12, and CI also tests 3.11, 3.13 and 3.14.
 
@@ -210,7 +207,7 @@ When a dependency forbids the release that carries the fixes, no early fix helps
 ```toml
 [[tool.quarantine.audit-exception]]
 package = "pillow"
-below = "13"        # the release that carries the fixes
+below = "13"        # the first version the dependency forbids (its cap: Pillow<13)
 until = 2027-02-24  # through this day; the audit fails again after it
 reason = "a dependency requires Pillow<13, and the advisories are fixed only in 13.0.0"
 ```
@@ -261,13 +258,9 @@ This project publishes to [PyPI.org](https://pypi.org/project/process-dcm/) usin
 
 ## AI-assisted development
 
-This project includes configuration for AI coding assistants:
+One file, `AGENTS.md`, carries the template's rules for every AI coding assistant: Claude Code, Kiro, Codex, Copilot's coding agent and Copilot code review all read it natively. It holds the rules of the [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg) template (Python style, commit messages, command safety, supply-chain safety) and is committed, so every contributor's agent gets them. Change them in the template and run `cruft update`.
 
-- **Kiro**: `.kiro/steering/` contains the rules for Python style, commit messages, command safety and supply-chain safety
-- **Claude Code, Codex, Copilot's coding agent and other agents**: `AGENTS.md`
-- **Copilot chat and code review**: `.github/copilot-instructions.md`
-
-These are committed to git so all contributors get consistent AI behaviour. No personal setup required — open the project in any of those tools and the rules apply automatically. The three carry the same rules and are maintained in the [e2g-pypkg](https://github.com/eye2Gene/e2g-pypkg) template.
+The org's agent rules are members-only and never committed: install them in your clone as described in "Development" (`setup-repo.sh --local --merge-agents`). Until you do, your agent has only the template's rules.
 
 ## Keeping up with template updates
 

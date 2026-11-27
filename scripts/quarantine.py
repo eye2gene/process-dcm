@@ -23,13 +23,13 @@ list, so they take the exceptions from the lock CI validated. The script needs o
 
 Some fixes cannot be taken at all for a while, early or not: a dependency caps the package below the release that
 carries them. A project declares each such case in its own ``pyproject.toml``, as a
-``[[tool.quarantine.audit-exception]]`` table with the ``package``, the version the fixes arrive in (``below``), a
-date (``until``) and the ``reason``. ``audit`` runs ``uv audit`` and leaves out the advisories an exception covers:
-those found in a locked version below ``below``, through the ``until`` day, unless the advisory names a fix the cap
-allows (a release above the locked one and below ``below``), which ``just up`` takes. An expired exception fails, so
-the date forces a decision; one that covers nothing, because the lock holds no version of its package below
-``below`` any more, fails as well, and ``audit --prune``, which ``just up`` runs after it re-locks, deletes it.
-``just ci`` and ``just qa`` run ``audit``.
+``[[tool.quarantine.audit-exception]]`` table with the ``package``, the first version the dependency forbids (its
+cap, ``below``), a date (``until``) and the ``reason``. ``audit`` runs ``uv audit`` and leaves out the advisories an
+exception covers: those found in a locked version below ``below``, through the ``until`` day, unless the advisory
+names a fix the cap allows (a release above the locked one and below ``below``), which ``just up`` takes. An expired
+exception fails, so the date forces a decision; one that covers nothing, because the lock holds no version of its
+package below ``below`` any more, fails as well, and ``audit --prune``, which ``just up`` runs after it re-locks,
+deletes it. ``just ci`` and ``just qa`` run ``audit``.
 """
 
 import argparse
@@ -597,7 +597,7 @@ def load_audit_exceptions(pyproject_text: str) -> list[AuditException]:
     if duplicates:
         raise SystemExit(
             f"pyproject.toml: more than one [[{AUDIT_TABLE}]] for {', '.join(duplicates)}: keep one per package, "
-            "with the `below` that carries every fix"
+            "its `below` the first version the dependency forbids"
         )
     return exceptions
 
@@ -1179,7 +1179,7 @@ def cmd_allow(package_arg: str, version_arg: str, now: datetime, advisory_arg: s
         print(f"{listed}: review and merge {pr_url}, then run `just up`")
         return 0
     try:
-        gh("pr", "merge", pr_url, "-R", LIST_REPO, "--squash", "--auto")
+        gh("pr", "merge", pr_url, "-R", LIST_REPO, "--merge", "--auto")
     except GhError as exc:
         raise SystemExit(
             f"{listed}: {pr_url} is open, but auto-merge could not be armed ({exc}): merge it, then run `just up`"
