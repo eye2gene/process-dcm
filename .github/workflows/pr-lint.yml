@@ -1,0 +1,10 @@
+name: PR Lint
+
+# Org check from eye2gene/.github: the PR title is a Conventional Commits subject and the body links an issue.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  lint:
+    uses: eye2gene/.github/.github/workflows/pr-lint.yml@main
